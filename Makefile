@@ -58,11 +58,16 @@ clean:
 clean-all: clean
 	$(MAKE) -C $(QUICKJS_DIR) clean
 
-# Test target
+# Test targets
 test: $(QJSX_PROG)
-	@echo "Testing QJSX with QJSXPATH..."
-	QJSXPATH=./test_modules $(QJSX_PROG) examples/test_qjsxpath.js
-	@echo "✅ Test successful!"
+	@echo "Running QJSX test suite..."
+	./tests/run_all.sh
+
+test-qjsxpath: $(QJSX_PROG)
+	./tests/test_qjsxpath.sh
+
+test-index: $(QJSX_PROG)
+	./tests/test_index_resolution.sh
 
 # Build everything (QuickJS + qjsx)
 build: quickjs-deps all
@@ -77,7 +82,9 @@ help:
 	@echo "QJSX Makefile targets:"
 	@echo "  all         - Build qjsx executable"
 	@echo "  build       - Build QuickJS dependencies and qjsx"
-	@echo "  test        - Run QJSXPATH tests"
+	@echo "  test        - Run all tests"
+	@echo "  test-qjsxpath - Run QJSXPATH module resolution tests"
+	@echo "  test-index  - Run Node.js-style index.js resolution tests"
 	@echo "  clean       - Clean qjsx build artifacts"
 	@echo "  clean-all   - Clean everything including QuickJS"
 	@echo "  install     - Install qjsx to \$$(PREFIX)/bin"
@@ -86,4 +93,4 @@ help:
 	@echo "  make build && make test"
 	@echo "  QJSXPATH=./my_modules ./bin/qjsx script.js"
 
-.PHONY: all build clean clean-all install help quickjs-deps test
+.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index

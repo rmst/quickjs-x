@@ -158,7 +158,48 @@ static char *resolve_qjsxpath(JSContext *ctx, const char *name) {
 }
 
 /**
- * Custom module loader that implements QJSXPATH resolution
+ * Try to resolve a path with Node.js-style index.js fallback
+ * 
+ * @param ctx - QuickJS context (for memory allocation)
+ * @param name - The import path to resolve
+ * @return Resolved file path, or NULL if not found
+ * 
+ * This implements Node.js module resolution for relative/absolute paths:
+ *   1. Try the exact path
+ *   2. Try path.js
+ *   3. Try path/index.js
+ */
+static char *resolve_with_index(JSContext *ctx, const char *name) {
+    size_t name_len = strlen(name);
+    
+    // Strategy 1: Try exact path first
+    if (file_exists(name)) {
+        return js_strdup(ctx, name);
+    }
+    
+    // Strategy 2: Try with .js extension
+    size_t buflen = name_len + 20;  // Extra room for ".js", "/index.js" + null terminator
+    char *buf = js_malloc(ctx, buflen);
+    if (!buf) return NULL;
+    
+    snprintf(buf, buflen, "%s.js", name);
+    if (file_exists(buf)) {
+        return buf;  // Return the allocated buffer
+    }
+    
+    // Strategy 3: Try path/index.js
+    snprintf(buf, buflen, "%s" DIR_SEP "index.js", name);
+    if (file_exists(buf)) {
+        return buf;  // Return the allocated buffer
+    }
+    
+    // Nothing found, clean up and return NULL
+    js_free(ctx, buf);
+    return NULL;
+}
+
+/**
+ * Custom module loader that implements QJSXPATH resolution and Node.js-style index.js resolution
  * 
  * @param ctx - QuickJS execution context
  * @param name - Module name from import statement
@@ -167,25 +208,27 @@ static char *resolve_qjsxpath(JSContext *ctx, const char *name) {
  * @return JSModuleDef pointer or NULL on failure
  * 
  * This function is called by QuickJS whenever it encounters an import statement.
- * We intercept bare imports (like "foo") and try QJSXPATH resolution first.
+ * It implements full Node.js-style module resolution:
  * 
  * Examples:
  *   import foo from "foo"        -> QJSXPATH resolution
- *   import bar from "./bar"      -> Standard QuickJS resolution  
- *   import baz from "/abs/baz"   -> Standard QuickJS resolution
+ *   import bar from "./bar"      -> Try ./bar, ./bar.js, ./bar/index.js
+ *   import baz from "/abs/baz"   -> Try /abs/baz, /abs/baz.js, /abs/baz/index.js
  */
 static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, JSValueConst attributes) {
+    // Debug: Print what module we're trying to load (disabled)
+    // fprintf(stderr, "QJSX: Loading module '%s'\n", name);
+    
     /*
-     * Determine if this is a "bare import" (Node.js terminology)
+     * Handle bare imports with QJSXPATH resolution
      * 
      * Bare imports: import foo from "foo"
-     * Relative imports: import foo from "./foo" or "../foo"  
-     * Absolute imports: import foo from "/path/to/foo"
-     * 
-     * We only apply QJSXPATH resolution to bare imports.
+     * These don't start with '.' or '/' and should be resolved via QJSXPATH
+     * BUT: QuickJS may have already resolved relative paths, so we need to check
+     * if this looks like a QJSXPATH import (no path separators) vs an already-resolved relative path
      */
-    if (name[0] != '.' && name[0] != '/') {
-        // This is a bare import - try QJSXPATH resolution
+    if (name[0] != '.' && name[0] != '/' && !strchr(name, '/')) {
+        // This is likely a true bare import (no path separators) - try QJSXPATH resolution
         char *path = resolve_qjsxpath(ctx, name);
         if (path) {
             // Found it! Use the original QuickJS loader with the resolved path
@@ -193,12 +236,27 @@ static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, 
             js_free(ctx, path);  // Clean up the resolved path
             return mod;
         }
-        // If QJSXPATH resolution failed, fall through to standard resolution
     }
     
-    // Use standard QuickJS module loading for:
-    // 1. Relative/absolute imports (always)
-    // 2. Bare imports that couldn't be resolved via QJSXPATH
+    /*
+     * For all other cases (relative paths, absolute paths, or failed QJSXPATH resolution),
+     * try Node.js-style index.js resolution
+     * 
+     * This handles:
+     * - Original relative imports: "./foo" or "../foo"  
+     * - Original absolute imports: "/path/to/foo"
+     * - QuickJS-resolved paths: "examples/simple_module" (from "./simple_module")
+     */
+    char *resolved_path = resolve_with_index(ctx, name);
+    if (resolved_path) {
+        // Found it! Use the original QuickJS loader with the resolved path
+        JSModuleDef *mod = js_module_loader(ctx, resolved_path, opaque, attributes);
+        js_free(ctx, resolved_path);  // Clean up the resolved path
+        return mod;
+    }
+    
+    // Fallback to standard QuickJS module loading
+    // This handles cases where our enhanced resolution didn't find anything
     return js_module_loader(ctx, name, opaque, attributes);
 }
 
