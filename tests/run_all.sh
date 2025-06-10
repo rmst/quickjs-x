@@ -42,6 +42,7 @@ run_test() {
 # Run individual tests
 run_test "test_qjsxpath.sh" "QJSXPATH Module Resolution"
 run_test "test_index_resolution.sh" "Node.js-style Index Resolution"
+run_test "test_colon_modules.sh" "Colon Characters in Module Names"
 
 # Summary
 echo ""
