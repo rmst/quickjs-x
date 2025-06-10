@@ -19,8 +19,9 @@ LIBS = -lm -ldl -lpthread
 BIN_DIR = bin
 OBJ_DIR = $(BIN_DIR)/obj
 
-# Program name
+# Program names
 QJSX_PROG = $(BIN_DIR)/qjsx
+QJSX_NODE_PROG = $(BIN_DIR)/qjsx-node
 
 # QuickJS object files (built by QuickJS)
 QUICKJS_OBJS = $(QUICKJS_DIR)/.obj/quickjs.o $(QUICKJS_DIR)/.obj/libregexp.o \
@@ -29,7 +30,7 @@ QUICKJS_OBJS = $(QUICKJS_DIR)/.obj/quickjs.o $(QUICKJS_DIR)/.obj/libregexp.o \
                $(QUICKJS_DIR)/.obj/repl.o
 
 # Default target
-all: $(QJSX_PROG)
+all: $(QJSX_PROG) $(QJSX_NODE_PROG)
 
 # Create directories
 $(BIN_DIR):
@@ -45,6 +46,13 @@ $(QJSX_PROG): $(OBJ_DIR)/qjsx.o quickjs-deps | $(BIN_DIR)
 # Build qjsx.o from our source
 $(OBJ_DIR)/qjsx.o: qjsx.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS_OPT) -I$(QUICKJS_DIR) -c -o $@ $<
+
+# Build qjsx-node (self-extracting script with embedded node modules)
+$(QJSX_NODE_PROG): qjsx-node.template node/* | $(BIN_DIR)
+	cp qjsx-node.template $@
+	echo "" >> $@
+	tar -czf - -C node . >> $@
+	chmod +x $@
 
 # Build QuickJS dependencies
 quickjs-deps:
@@ -69,22 +77,27 @@ test-qjsxpath: $(QJSX_PROG)
 test-index: $(QJSX_PROG)
 	./tests/test_index_resolution.sh
 
+test-qjsx-node: $(QJSX_NODE_PROG)
+	./tests/test_qjsx_node.sh
+
 # Build everything (QuickJS + qjsx)
 build: quickjs-deps all
 
-# Install qjsx
-install: $(QJSX_PROG)
+# Install qjsx and qjsx-node
+install: $(QJSX_PROG) $(QJSX_NODE_PROG)
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_PROG) "$(DESTDIR)$(PREFIX)/bin"
+	install -m755 $(QJSX_NODE_PROG) "$(DESTDIR)$(PREFIX)/bin"
 
 # Help target
 help:
 	@echo "QJSX Makefile targets:"
-	@echo "  all         - Build qjsx executable"
+	@echo "  all         - Build qjsx and qjsx-node executables"
 	@echo "  build       - Build QuickJS dependencies and qjsx"
 	@echo "  test        - Run all tests"
 	@echo "  test-qjsxpath - Run QJSXPATH module resolution tests"
 	@echo "  test-index  - Run Node.js-style index.js resolution tests"
+	@echo "  test-qjsx-node - Run qjsx-node Node.js compatibility tests"
 	@echo "  clean       - Clean qjsx build artifacts"
 	@echo "  clean-all   - Clean everything including QuickJS"
 	@echo "  install     - Install qjsx to \$$(PREFIX)/bin"
@@ -93,4 +106,4 @@ help:
 	@echo "  make build && make test"
 	@echo "  QJSXPATH=./my_modules ./bin/qjsx script.js"
 
-.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index
+.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node
