@@ -13,7 +13,7 @@ set -e
 
 # Check arguments
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
-    echo "Usage: $0 <output_file> <library_directory> [qjsx_arguments]" >&2
+    echo "Usage: $0 <output_file> <library_directory> <qjsx_arguments>" >&2
     echo "" >&2
     echo "Examples:" >&2
     echo "  $0 bin/qjsx-node node/                    # Build qjsx-node with node modules" >&2
@@ -65,7 +65,7 @@ cp "$SCRIPT_DIR/qjsx-run.template" "$OUTPUT_FILE"
 if [ -n "$QJSX_ARGS" ]; then
     # Replace % in the arguments with the actual runtime variable
     # This allows users to write '%/main.js' and have it work at runtime
-    PROCESSED_ARGS=$(echo "$QJSX_ARGS" | sed 's|%|$QJSXLIBDIR|g')
+    PROCESSED_ARGS=$(echo "$QJSX_ARGS" | sed 's/%/$QJSXLIBDIR/g')
     sed -i "s|__CUSTOM_ARGS__|$PROCESSED_ARGS|" "$OUTPUT_FILE"
 else
     # No custom arguments - remove the placeholder entirely

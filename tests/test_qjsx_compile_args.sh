@@ -16,16 +16,18 @@ echo -e "${BLUE}Testing qjsx-compile with custom arguments and % substitution...
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
-# Create test app structure
-mkdir -p "$TEMP_DIR/app_libs"
+# Create test app structure with nested directories
+mkdir -p "$TEMP_DIR/app_libs/subdir/nested"
 
 # Create a main.js that will be auto-executed
 cat > "$TEMP_DIR/app_libs/main.js" << 'EOF'
-// Import utility from same directory
+// Import utility from same directory and nested file
 import { appName } from "./utils.js";
+import { nestedValue } from "./subdir/nested/config.js";
 
 console.log("🚀 Auto-launched app from %");
 console.log("✅ App name:", appName);
+console.log("📁 Nested value:", nestedValue);
 console.log("📝 Auto-launch test successful!");
 
 // Create a global variable to prove the script ran
@@ -38,13 +40,19 @@ export const appName = "TestApp";
 export const version = "1.0.0";
 EOF
 
+# Create a nested config file to test path handling
+cat > "$TEMP_DIR/app_libs/subdir/nested/config.js" << 'EOF'
+export const nestedValue = "nested/path/test";
+export const configPath = "subdir/nested/config.js";
+EOF
+
 # Build self-extracting script that auto-runs main.js
 echo "Creating self-extracting app with auto-launch:"
 echo "  - Module directory: $TEMP_DIR/app_libs"
-echo "  - Auto-launch script: %/main.js"
+echo "  - Auto-launch script: %/subdir/../main.js"
 echo ""
 
-if ./qjsx-compile "$TEMP_DIR/test-app" "$TEMP_DIR/app_libs" '%/main.js'; then
+if ./qjsx-compile "$TEMP_DIR/test-app" "$TEMP_DIR/app_libs" '%/subdir/../main.js'; then
     echo ""
     echo "Testing the auto-launching app..."
     
