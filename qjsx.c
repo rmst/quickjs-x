@@ -199,6 +199,34 @@ static char *resolve_with_index(JSContext *ctx, const char *name) {
 }
 
 /**
+ * Translate colons to forward slashes in module names
+ * 
+ * @param ctx - QuickJS context (for memory allocation)
+ * @param name - The original module name (e.g., "node:fs")
+ * @return Translated module name (e.g., "node/fs"), or NULL on allocation failure
+ * 
+ * This allows imports like "node:fs" to be resolved as "node/fs.js" in QJSXPATH,
+ * making the filesystem structure more conventional.
+ */
+static char *translate_colons_to_slashes(JSContext *ctx, const char *name) {
+    if (!strchr(name, ':')) {
+        return NULL;  // No colons to translate
+    }
+    
+    char *translated = js_strdup(ctx, name);
+    if (!translated) return NULL;
+    
+    // Replace all colons with forward slashes
+    for (char *p = translated; *p; p++) {
+        if (*p == ':') {
+            *p = '/';
+        }
+    }
+    
+    return translated;
+}
+
+/**
  * Custom module loader that implements QJSXPATH resolution and Node.js-style index.js resolution
  * 
  * @param ctx - QuickJS execution context
@@ -214,26 +242,37 @@ static char *resolve_with_index(JSContext *ctx, const char *name) {
  *   import foo from "foo"        -> QJSXPATH resolution
  *   import bar from "./bar"      -> Try ./bar, ./bar.js, ./bar/index.js
  *   import baz from "/abs/baz"   -> Try /abs/baz, /abs/baz.js, /abs/baz/index.js
+ *   import fs from "node:fs"     -> Translate to "node/fs" then QJSXPATH resolution
  */
 static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, JSValueConst attributes) {
     // Debug: Print what module we're trying to load (disabled)
     // fprintf(stderr, "QJSX: Loading module '%s'\n", name);
     
     /*
+     * First, check if we need to translate colons to slashes
+     * 
+     * This handles imports like "node:fs" -> "node/fs"
+     * The translated name will be used for all subsequent resolution attempts
+     */
+    char *translated_name = translate_colons_to_slashes(ctx, name);
+    const char *module_name = translated_name ? translated_name : name;
+    
+    /*
      * Handle bare imports with QJSXPATH resolution
      * 
-     * Bare imports: import foo from "foo"
+     * Bare imports: import foo from "foo" or "node:fs" (after translation to "node/fs")
      * These don't start with '.' or '/' and should be resolved via QJSXPATH
      * BUT: QuickJS may have already resolved relative paths, so we need to check
      * if this looks like a QJSXPATH import (no path separators) vs an already-resolved relative path
      */
-    if (name[0] != '.' && name[0] != '/' && !strchr(name, '/')) {
+    if (module_name[0] != '.' && module_name[0] != '/' && !strchr(module_name, '/')) {
         // This is likely a true bare import (no path separators) - try QJSXPATH resolution
-        char *path = resolve_qjsxpath(ctx, name);
+        char *path = resolve_qjsxpath(ctx, module_name);
         if (path) {
             // Found it! Use the original QuickJS loader with the resolved path
             JSModuleDef *mod = js_module_loader(ctx, path, opaque, attributes);
             js_free(ctx, path);  // Clean up the resolved path
+            if (translated_name) js_free(ctx, translated_name);  // Clean up translation
             return mod;
         }
     }
@@ -246,18 +285,23 @@ static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, 
      * - Original relative imports: "./foo" or "../foo"  
      * - Original absolute imports: "/path/to/foo"
      * - QuickJS-resolved paths: "examples/simple_module" (from "./simple_module")
+     * - Translated paths: "node/fs" (from "node:fs")
      */
-    char *resolved_path = resolve_with_index(ctx, name);
+    char *resolved_path = resolve_with_index(ctx, module_name);
     if (resolved_path) {
         // Found it! Use the original QuickJS loader with the resolved path
         JSModuleDef *mod = js_module_loader(ctx, resolved_path, opaque, attributes);
         js_free(ctx, resolved_path);  // Clean up the resolved path
+        if (translated_name) js_free(ctx, translated_name);  // Clean up translation
         return mod;
     }
     
     // Fallback to standard QuickJS module loading
     // This handles cases where our enhanced resolution didn't find anything
-    return js_module_loader(ctx, name, opaque, attributes);
+    // Use the translated name if available, otherwise the original name
+    JSModuleDef *result = js_module_loader(ctx, module_name, opaque, attributes);
+    if (translated_name) js_free(ctx, translated_name);  // Clean up translation
+    return result;
 }
 
 /* ========================================================================
