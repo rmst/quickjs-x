@@ -260,12 +260,16 @@ static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, 
     /*
      * Handle bare imports with QJSXPATH resolution
      * 
-     * Bare imports: import foo from "foo" or "node:fs" (after translation to "node/fs")
-     * These don't start with '.' or '/' and should be resolved via QJSXPATH
-     * BUT: QuickJS may have already resolved relative paths, so we need to check
-     * if this looks like a QJSXPATH import (no path separators) vs an already-resolved relative path
+     * Bare imports are any imports that don't start with './' or '../' or '/'
+     * This includes:
+     * - Simple names: "foo", "lodash"
+     * - Scoped packages: "@babel/core"
+     * - Nested paths: "lodash/debounce"
+     * - Translated imports: "node/fs" (from "node:fs")
+     * 
+     * Node.js tries bare imports from node_modules FIRST, before checking relative paths
      */
-    if (module_name[0] != '.' && module_name[0] != '/' && !strchr(module_name, '/')) {
+    if (module_name[0] != '.' && module_name[0] != '/') {
         // This is likely a true bare import (no path separators) - try QJSXPATH resolution
         char *path = resolve_qjsxpath(ctx, module_name);
         if (path) {
