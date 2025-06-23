@@ -68,10 +68,11 @@ if [ -n "$QJSX_ARGS" ]; then
     PROCESSED_ARGS=$(echo "$QJSX_ARGS" | sed 's/%/$QJSXLIBDIR/g')
     # Escape forward slashes in PROCESSED_ARGS for sed
     ESCAPED_ARGS=$(echo "$PROCESSED_ARGS" | sed 's/\//\\\//g')
-    sed -i "s/__CUSTOM_ARGS__/$ESCAPED_ARGS/" "$OUTPUT_FILE"
+    # Use a temporary file for portability between macOS and Linux
+    sed "s/__CUSTOM_ARGS__/$ESCAPED_ARGS/" "$OUTPUT_FILE" > "$OUTPUT_FILE.tmp" && mv "$OUTPUT_FILE.tmp" "$OUTPUT_FILE"
 else
     # No custom arguments - remove the placeholder entirely
-    sed -i "s|__CUSTOM_ARGS__||" "$OUTPUT_FILE"
+    sed "s|__CUSTOM_ARGS__||" "$OUTPUT_FILE" > "$OUTPUT_FILE.tmp" && mv "$OUTPUT_FILE.tmp" "$OUTPUT_FILE"
 fi
 
 # Add separator line before tar data
