@@ -1,0 +1,4 @@
+
+
+
+Improvement: An "iframe"-like mechanism that launches a new "nested" quickjs process  that is completely sandboxed and doesn't have access to the os and std modules and can't import anything outside a predefined QJSXPATH. The only way it can affect things is through communication with the main process (which would have to be implemented). Also: I doubt it, but check if maybe web workers or sth already can do this
