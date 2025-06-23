@@ -1,0 +1,101 @@
+#!/bin/bash
+# qjsx-compile: Build self-extracting scripts with embedded qjsx binary and libraries
+#
+# Usage: qjsx-compile <output_file> <library_directory> [qjsx_arguments]
+#
+# Creates a self-extracting script that contains:
+# - The qjsx binary
+# - All files from the specified library directory
+# - A shell script wrapper that extracts and runs everything
+# - Optional: Custom arguments for qjsx execution
+
+set -e
+
+# Check arguments
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+    echo "Usage: $0 <output_file> <library_directory> [qjsx_arguments]" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  $0 bin/qjsx-node node/                    # Build qjsx-node with node modules" >&2
+    echo "  $0 bin/qjsx-custom my_libs/              # Build custom version with my_libs" >&2
+    echo "  $0 bin/my-app app/ '%/main.js' # Build app that auto-runs main.js" >&2
+    echo "  $0 bin/server srv/ '%/start.js --port 3000' # Multiple args in single string" >&2
+    echo "" >&2
+    echo "Note: % in qjsx_arguments will be replaced with the module directory path" >&2
+    exit 1
+fi
+
+OUTPUT_FILE="$1"
+LIB_DIR="$2"
+QJSX_ARGS="$3"
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Validate inputs
+if [ ! -d "$LIB_DIR" ]; then
+    echo "Error: Module directory '$LIB_DIR' does not exist" >&2
+    exit 1
+fi
+
+if [ ! -f "$SCRIPT_DIR/qjsx-run.template" ]; then
+    echo "Error: Template file qjsx-run.template not found in $SCRIPT_DIR" >&2
+    exit 1
+fi
+
+# Ensure qjsx binary is built (run make from script directory)
+echo "🔧 Ensuring qjsx binary is available..."
+(cd "$SCRIPT_DIR" && make bin/qjsx)
+
+# Create output directory if needed
+OUTPUT_DIR=$(dirname "$OUTPUT_FILE")
+mkdir -p "$OUTPUT_DIR"
+
+echo "🔧 Building self-extracting script: $OUTPUT_FILE"
+echo "   Module directory: $LIB_DIR"
+echo "   qjsx binary: $SCRIPT_DIR/bin/qjsx"
+if [ -n "$QJSX_ARGS" ]; then
+    echo "   Custom arguments: $QJSX_ARGS"
+fi
+
+# Start with the template and customize it for arguments
+cp "$SCRIPT_DIR/qjsx-run.template" "$OUTPUT_FILE"
+
+# Replace the __CUSTOM_ARGS__ placeholder with actual arguments
+if [ -n "$QJSX_ARGS" ]; then
+    # Replace % in the arguments with the actual runtime variable
+    # This allows users to write '%/main.js' and have it work at runtime
+    PROCESSED_ARGS=$(echo "$QJSX_ARGS" | sed 's|%|$QJSXLIBDIR|g')
+    sed -i "s|__CUSTOM_ARGS__|$PROCESSED_ARGS|" "$OUTPUT_FILE"
+else
+    # No custom arguments - remove the placeholder entirely
+    sed -i "s|__CUSTOM_ARGS__||" "$OUTPUT_FILE"
+fi
+
+# Add separator line before tar data
+echo "" >> "$OUTPUT_FILE"
+
+# Create temporary directory for packaging
+TEMP_BUILD_DIR=$(mktemp -d)
+trap "rm -rf '$TEMP_BUILD_DIR'" EXIT
+
+echo "📦 Packaging modules and binary..."
+
+# Copy module files
+cp -r "$LIB_DIR"/* "$TEMP_BUILD_DIR/"
+
+# Copy qjsx binary
+cp "$SCRIPT_DIR/bin/qjsx" "$TEMP_BUILD_DIR/qjsx"
+
+# Create compressed tar archive and append to output file
+tar -czf - -C "$TEMP_BUILD_DIR" . >> "$OUTPUT_FILE"
+
+# Make executable
+chmod +x "$OUTPUT_FILE"
+
+# Show results
+OUTPUT_SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
+echo "✅ Created self-extracting script: $OUTPUT_FILE ($OUTPUT_SIZE)"
+echo "   Contains: qjsx binary + $(find "$LIB_DIR" -type f | wc -l) module files"
+echo ""
+echo "Usage: $OUTPUT_FILE [qjsx-options] script.js [script-args]"

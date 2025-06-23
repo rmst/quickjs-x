@@ -47,12 +47,9 @@ $(QJSX_PROG): $(OBJ_DIR)/qjsx.o quickjs-deps | $(BIN_DIR)
 $(OBJ_DIR)/qjsx.o: qjsx.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS_OPT) -I$(QUICKJS_DIR) -c -o $@ $<
 
-# Build qjsx-node (self-extracting script with embedded node modules)
-$(QJSX_NODE_PROG): qjsx-node.template node/* | $(BIN_DIR)
-	cp qjsx-node.template $@
-	echo "" >> $@
-	tar -czf - -C node . >> $@
-	chmod +x $@
+# Build qjsx-node (self-extracting script with embedded node modules and qjsx binary)
+$(QJSX_NODE_PROG): qjsx-run.template node/* $(QJSX_PROG) qjsx-compile | $(BIN_DIR)
+	./qjsx-compile $@ node
 
 # Build QuickJS dependencies
 quickjs-deps:
@@ -83,11 +80,12 @@ test-qjsx-node: $(QJSX_NODE_PROG)
 # Build everything (QuickJS + qjsx)
 build: quickjs-deps all
 
-# Install qjsx and qjsx-node
+# Install qjsx, qjsx-node, and qjsx-compile
 install: $(QJSX_PROG) $(QJSX_NODE_PROG)
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_PROG) "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_NODE_PROG) "$(DESTDIR)$(PREFIX)/bin"
+	install -m755 qjsx-compile "$(DESTDIR)$(PREFIX)/bin"
 
 # Help target
 help:
@@ -106,4 +104,4 @@ help:
 	@echo "  make build && make test"
 	@echo "  QJSXPATH=./my_modules ./bin/qjsx script.js"
 
-.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node
+.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node test-qjsx-compile-args

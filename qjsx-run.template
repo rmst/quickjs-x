@@ -1,0 +1,27 @@
+#!/bin/bash
+# QJSX-Node: Portable QuickJS with Node.js module shims
+# This script contains embedded Node.js compatibility modules and qjsx binary as tar data
+
+set -e
+
+# Create temporary directory for extracted content
+QJSXLIBDIR=$(mktemp -d)
+trap "rm -rf '$QJSXLIBDIR'" EXIT
+
+# Extract embedded data from the end of this script
+# Find where the tar data starts (after __TAR_DATA__ marker)
+TAR_START=$(awk '/^__TAR_DATA__$/{print NR + 1; exit 0; }' "$0")
+
+if [ -z "$TAR_START" ]; then
+    echo "Error: Could not find embedded tar data" >&2
+    exit 1
+fi
+
+# Extract the tar data and uncompress it to temp directory
+tail -n +$TAR_START "$0" | tar -xzf - -C "$QJSXLIBDIR"
+
+# Run the embedded qjsx binary with QJSXPATH pointing to our temporary modules
+QJSXPATH="$QJSXLIBDIR" exec "$QJSXLIBDIR/qjsx" __CUSTOM_ARGS__ "$@"
+
+# Everything after this line is tar data
+__TAR_DATA__
