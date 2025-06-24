@@ -6,8 +6,16 @@ const process = {
   // Command line arguments
   argv: [...scriptArgs],  // TODO: maybe we have to unwrap these
   
-  // Environment variables
-  env: std.getenviron(),  // TODO: make this function call (via getter / setter / proxy)
+  // Environment variables - using Proxy to allow dynamic read/write
+  env: new Proxy({}, {
+    get: (_, p) => typeof p === 'string' ? std.getenv(p) : undefined,
+    set: (_, p, v) => typeof p === 'string' ? (v == null ? std.unsetenv(p) : std.setenv(p, String(v)), true) : false,
+    has: (_, p) => typeof p === 'string' && std.getenv(p) !== undefined,
+    deleteProperty: (_, p) => typeof p === 'string' ? (std.unsetenv(p), true) : false,
+    ownKeys: () => Object.keys(std.getenviron()),
+    getOwnPropertyDescriptor: (_, p) => typeof p === 'string' && std.getenv(p) !== undefined ? 
+      { configurable: true, enumerable: true, value: std.getenv(p) } : undefined
+  }),
   
   // Process control
   exit: std.exit,
@@ -35,4 +43,5 @@ const process = {
 export default process;
 
 // Also export individual properties for named imports
-export const { argv, env, exit, cwd, pid, platform, version, versions } = process;
+export const { argv, exit, cwd, pid, platform, version, versions } = process;
+export const env = process.env;  // Export env separately to preserve the Proxy
