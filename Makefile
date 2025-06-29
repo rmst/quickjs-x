@@ -81,7 +81,7 @@ test-qjsx-node: $(QJSX_NODE_PROG)
 build: quickjs-deps all
 
 # Install qjsx, qjsx-node, and qjsx-compile
-install: $(QJSX_PROG) $(QJSX_NODE_PROG)
+install: $(QJSX_PROG) $(QJSX_NODE_PROG) qjsx-compile
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_PROG) "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_NODE_PROG) "$(DESTDIR)$(PREFIX)/bin"
@@ -104,4 +104,4 @@ help:
 	@echo "  make build && make test"
 	@echo "  QJSXPATH=./my_modules ./bin/qjsx script.js"
 
-.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node test-qjsx-compile-args
+.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node

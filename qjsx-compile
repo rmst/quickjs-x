@@ -66,8 +66,12 @@ if [ -n "$QJSX_ARGS" ]; then
     # Replace % in the arguments with the actual runtime variable
     # This allows users to write '%/main.js' and have it work at runtime
     PROCESSED_ARGS=$(echo "$QJSX_ARGS" | sed 's/%/$QJSXLIBDIR/g')
+    
+    # Escape sed delimiter to prevent injection
+    ESCAPED_PROCESSED_ARGS=$(echo "$PROCESSED_ARGS" | sed 's/|/\\|/g')
+
     # Use a temporary file for portability between macOS and Linux
-    sed "s|__CUSTOM_ARGS__|$PROCESSED_ARGS|" "$OUTPUT_FILE" > "$OUTPUT_FILE.tmp" && mv "$OUTPUT_FILE.tmp" "$OUTPUT_FILE"
+    sed "s|__CUSTOM_ARGS__|$ESCAPED_PROCESSED_ARGS|" "$OUTPUT_FILE" > "$OUTPUT_FILE.tmp" && mv "$OUTPUT_FILE.tmp" "$OUTPUT_FILE"
 else
     # No custom arguments - remove the placeholder entirely
     sed "s|__CUSTOM_ARGS__||" "$OUTPUT_FILE" > "$OUTPUT_FILE.tmp" && mv "$OUTPUT_FILE.tmp" "$OUTPUT_FILE"
