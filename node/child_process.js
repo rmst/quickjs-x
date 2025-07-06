@@ -11,6 +11,7 @@ import * as os from 'os';
  * @param {string} [options.cwd] - Working directory for the command.
  * @param {string} [options.stdout] - Redirect stdout (can be 'inherit').
  * @param {string} [options.stderr] - Redirect stderr (can be 'inherit').
+ * @param {string} [options.input] - A string to be passed as input to the command.
  *
  * @returns {string} - The stdout output of the command (if not forwarded).
  *
@@ -34,26 +35,44 @@ import * as os from 'os';
  * ```js
  * execFileSync('your_command', ['arg1', 'arg2'], { stdout: 'inherit', stderr: 'inherit' });
  * ```
+ *
+ * 4. Call with input string:
+ * ```js
+ * const output = execFileSync('cat', [], { input: 'Hello from input!' });
+ * console.log(output);  // Outputs: Hello from input!
+ * ```
  */
 export const execFileSync = (file, args = [], options = {}) => {
 	let env = options.env || std.getenv();  // Use the provided environment or current one
 	let cwd = options.cwd || undefined;    // Optional working directory
 
-	// Create pipes for stdout and stderr unless 'inherit' is specified
+	// Create pipes for stdin, stdout, and stderr
+	let [stdinRead, stdinWrite] = [null, null];
+	if (options.input) {
+		[stdinRead, stdinWrite] = os.pipe();
+	}
 	let [stdoutRead, stdoutWrite] = os.pipe();
 	let [stderrRead, stderrWrite] = os.pipe();
 	
+	let stdin = (options.input) ? stdinRead : std.in;
 	let stdout = (options.stdout === 'inherit') ? std.out : stdoutWrite;
 	let stderr = (options.stderr === 'inherit') ? std.err : stderrWrite;
 
 	// Prepare the process execution
 	let execOptions = {
-		// file: file,
 		env: env,
 		cwd: cwd,
+		stdin: stdin,
 		stdout: stdout,
 		stderr: stderr,
 	};
+
+	// Write input to the process if provided
+	if (options.input) {
+		let inputFile = std.fdopen(stdinWrite, 'w');
+		inputFile.puts(options.input);
+		inputFile.close();
+	}
 
 	let exitCode = os.exec([file, ...args], execOptions);
 
