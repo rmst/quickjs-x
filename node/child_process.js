@@ -93,23 +93,38 @@ export const execFileSync = (file, args = [], options = {}) => {
 
 	// Handle error case if exit code is non-zero
 	if (exitCode !== 0) {
-		let errorMsg = `CMD: [${file}, ${args.join(', ')}]\nCOD: ${exitCode}\n`;
+		let argsSection = args
+			.map(a => `'${a}'`)
+			.join(', ')
+			.replaceAll("\n", "\n  ")
 
-		// Add environment variables to the error message if any non-standard environment was provided
+		let errorMsg = `Command: ['${file}', ${argsSection}]\n`
+		if(argsSection.includes("\n"))
+			errorMsg += "\n"
+
+		errorMsg += `Exit Code: ${exitCode}\n`
+
 		if (options.env) {
-			let envVars = Object.entries(options.env).map(([key, value]) => `${key}=${value}`).join('\n');
-			errorMsg += `ENV: ${envVars}\n`;
+			let envVars = Object.entries(options.env)
+				.map(([key, value]) => `${key}=${value}`)
+				.join('\n')
+				
+			errorMsg += `Env:\n${indent(envVars)}\n\n`;
 		}
 
 		// Add working directory if specified
 		if (options.cwd) {
-			errorMsg += `CWD: ${options.cwd}\n`;
+			errorMsg += `Cwd: ${options.cwd}\n`;
 		}
 
-    // errorMsg += `Stdout Output:\n${output}\n`
+    // errorMsg += `Stdout:\n${indent(output)}\n`
+		// if(output.includes("\n"))
+		// 	errorMsg += "\n"
 
 		// Append error output from stderr if it was captured
-    errorMsg += `ERR: ${errorOutput}\n`;
+    errorMsg += `Stderr:\n${indent(errorOutput)}\n`;
+		if(errorOutput.includes("\n"))
+			errorMsg += "\n"
 
 		throw new Error(errorMsg);
 	}
@@ -139,3 +154,15 @@ let output = file.readAsString();
 
   return output;
 }
+
+/**
+ * @param {*} prefix 
+ * @param {string} str 
+ */
+function prefixLines(prefix, str){
+	return str.split("\n")
+		.map(line => prefix + line)
+		.join("\n")
+}
+
+const indent = str => prefixLines("  ", str)
