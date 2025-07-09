@@ -30,7 +30,7 @@ export const readFileSync = (path, options=null) => {
     // If the encoding is explicitly set to 'utf8', read the file as a UTF-8 string
     if (encoding === "utf8") {
       return file.readAsString()
-    } else {
+    } else if (encoding === null) {
       // Determine the total file size to allocate a buffer of appropriate size
       file.seek(0, std.SEEK_END); // Move to the end of the file
       let fileSize = Number(file.tello()); // Get the file size
@@ -45,6 +45,9 @@ export const readFileSync = (path, options=null) => {
       }
 
       return new Uint8Array(buffer); // Returning Uint8Array for consistency
+    }
+    else {
+      throw Error(`Unsupported encoding: ${encoding}`)
     }
   } finally {
     file.close();
