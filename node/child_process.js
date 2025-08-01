@@ -51,20 +51,27 @@ export const execFileSync = (file, args = [], options = {}) => {
 	if (options.input) {
 		[stdinRead, stdinWrite] = os.pipe();
 	}
-	let [stdoutRead, stdoutWrite] = os.pipe();
-	let [stderrRead, stderrWrite] = os.pipe();
-	
-	let stdin = (options.input) ? stdinRead : std.in;
-	let stdout = (options.stdout === 'inherit') ? std.out : stdoutWrite;
-	let stderr = (options.stderr === 'inherit') ? std.err : stderrWrite;
 
+	const inheritStdout = options.stdout === 'inherit';
+	let stdoutRead, stdoutWrite;
+	if (!inheritStdout) {
+		[stdoutRead, stdoutWrite] = os.pipe();
+	}
+
+	const inheritStderr = options.stderr === 'inherit';
+	let stderrRead, stderrWrite;
+	if (!inheritStderr) {
+		[stderrRead, stderrWrite] = os.pipe();
+	}
+	
 	// Prepare the process execution
 	let execOptions = {
 		env: env,
 		cwd: cwd,
-		stdin: stdin,
-		stdout: stdout,
-		stderr: stderr,
+		...(options.input ? { stdin: stdinRead } : {}),
+		...(inheritStdout ? {} : { stdout: stdoutWrite }),
+		...(inheritStderr ? {} : { stderr: stderrWrite }),
+
 	};
 
 	// Write input to the process if provided
@@ -78,14 +85,14 @@ export const execFileSync = (file, args = [], options = {}) => {
 
   // Read stdout and stderr from pipes if not forwarded
 	let output = "";
-	if (options.stdout !== 'inherit') {
+	if (!inheritStdout) {
     os.close(stdoutWrite);
 		output = readFromFd(stdoutRead);  // Capture stdout
 		os.close(stdoutRead);  // Close the read-end of stdout pipe
 	}
 
   let errorOutput = "";
-  if (options.stderr !== 'inherit') {
+  if (!inheritStderr) {
     os.close(stderrWrite);
 		errorOutput = readFromFd(stderrRead);  // Capture stderr
 		os.close(stderrRead);  // Close the read-end of stderr pipe

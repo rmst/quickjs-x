@@ -42,6 +42,7 @@ $(OBJ_DIR):
 # Build qjsx executable
 $(QJSX_PROG): $(OBJ_DIR)/qjsx.o quickjs-deps | $(BIN_DIR)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsx.o $(QUICKJS_OBJS) $(LIBS)
+	chmod +x $@
 
 # Build qjsx.o from our source
 $(OBJ_DIR)/qjsx.o: qjsx.c | $(OBJ_DIR)
@@ -64,7 +65,7 @@ clean-all: clean
 	$(MAKE) -C $(QUICKJS_DIR) clean
 
 # Test targets
-test: $(QJSX_PROG)
+test: $(QJSX_PROG) $(QJSX_NODE_PROG)
 	@echo "Running QJSX test suite..."
 	./tests/run_all.sh
 
