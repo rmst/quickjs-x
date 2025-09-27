@@ -21,8 +21,14 @@ const process = {
   exit: std.exit,
   
   // Current working directory
-  cwd: () => os.getcwd ? os.getcwd()[0] : '.',
-  
+  cwd: () => {
+    let [dir, error] = os.getcwd()
+    if(error != 0)
+      throw Error(`Couldn't get working directory`)
+
+    return dir
+  },
+    
   // Process ID (not available in QuickJS, return dummy value)
   pid: 1,
   
