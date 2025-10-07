@@ -1,4 +1,8 @@
 
+### Read/Watch
+- Structured stack trace access: https://github.com/bellard/quickjs/issues/235
+- Typescript: https://github.com/bellard/quickjs/issues/173
+- Sockets: https://github.com/bellard/quickjs/pull/405
 
 ## Bugs
 
