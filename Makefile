@@ -11,8 +11,8 @@ VERSION = 2024-01-13
 CC = gcc
 CFLAGS = -g -Wall -Wno-array-bounds -Wno-format-truncation -fwrapv \
          -D_GNU_SOURCE -DCONFIG_VERSION='"$(VERSION)"' -DCONFIG_BIGNUM
-CFLAGS_OPT = $(CFLAGS) -O2 -flto
-LDFLAGS = -g -flto -rdynamic
+CFLAGS_OPT = $(CFLAGS) -O2
+LDFLAGS = -g -rdynamic
 LIBS = -lm -ldl -lpthread
 
 # Build directories (can be overridden: make BIN_DIR=/tmp/build)
@@ -70,7 +70,7 @@ $(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h q
 
 # Build qjsxc.o from the patched source
 $(OBJ_DIR)/qjsxc.o: $(OBJ_DIR)/qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -DCONFIG_LTO -I. -I$(QUICKJS_DIR) -c -o $@ $<
+	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsx-node (self-extracting script with embedded node modules and qjsx binary)
 $(QJSX_NODE_PROG): qjsx-run.template node/* $(QJSX_PROG) qjsx-compile | $(BIN_DIR)
