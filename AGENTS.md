@@ -1,4 +1,6 @@
 
+This is a wrapper around the Quickjs Javascript engine with a slight modification to the module resolution system. See Readme.md and tests/ for more details.
+
 ### Important: At the start of every new conversation
 - Read all of the following documents:
 	- quickjs/doc/quickjs.texi

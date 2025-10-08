@@ -3,11 +3,17 @@
 Quickjs with additional features
 
 
-### Install
+### Build
 
 ```bash
-git clone --recurse-submodules $PATH_TO_THIS_REPO
-make build
+git clone --recurse-submodules https://github.com/rmst/quickjs-x.git
+cd quickjs-x
+make build  # Builds ./bin/qjsx and ./bin/qjsx-node
+```
+
+You can build in an alternative directory:
+```bash
+make BIN_DIR=/tmp/qjsx-build build
 ```
 
 ### Usage
@@ -27,11 +33,13 @@ make build
 QJSXPATH=./my_modules:./lib ./bin/qjsx app.js
 ```
 
+Similar to Node.js's `NODE_PATH`, QJSXPATH enables bare module imports (e.g., `import foo from "foo"`) by specifying search directories.
+
 ### Building Self-Extracting Applications
 
 Use `qjsx-compile` to create portable, self-contained executables that embed both the qjsx runtime and your modules:
 
-#### Basic Usage (No Auto-Launch)
+#### Basic Usage
 ```bash
 # Create a self-contained runtime with your modules
 ./qjsx-compile bin/my-runtime my_modules/
@@ -54,8 +62,3 @@ This creates a portable executable that contains qjsx + your modules. Scripts ca
 ```
 
 The `%` placeholder expands to the temporary directory containing your extracted modules at runtime. This allows you to create single-file applications that automatically execute your main script with predefined arguments.
-
-**Key Benefits:**
-- **Portable**: Single file contains everything needed
-- **No Dependencies**: Works on any system with the target architecture
-- **Flexible**: Can create both general runtimes and specific applications
