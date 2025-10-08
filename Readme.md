@@ -8,7 +8,7 @@ Quickjs with additional features
 ```bash
 git clone --recurse-submodules https://github.com/rmst/quickjs-x.git
 cd quickjs-x
-make build  # Builds ./bin/qjsx and ./bin/qjsx-node
+make build  # Builds ./bin/qjsx, ./bin/qjsx-node, and ./bin/qjsxc
 ```
 
 You can build in an alternative directory:
@@ -35,33 +35,31 @@ QJSXPATH=./my_modules:./lib ./bin/qjsx app.js
 
 Similar to Node.js's `NODE_PATH`, QJSXPATH enables bare module imports (e.g., `import foo from "foo"`) by specifying search directories.
 
-### Building Self-Extracting Applications
+### Building Standalone Applications
 
-Use `qjsx-compile` to create portable, self-contained executables that embed both the qjsx runtime and your modules:
+Use `qjsxc` to compile JavaScript applications into standalone native executables with embedded modules.
 
 #### Basic Usage
 ```bash
-# Create a self-contained runtime with your modules
-./qjsx-compile bin/my-runtime my_modules/
+# Compile an application with embedded modules
+QJSXPATH=./my_modules ./bin/qjsxc -o my-app main.js
 
-# The resulting binary works like qjsx but with embedded modules
-./bin/my-runtime script.js        # Run any script with access to embedded modules
-./bin/my-runtime --help          # Show qjsx help
+# The resulting binary is a standalone executable
+./my-app                          # Run your application
 ```
 
-This creates a portable executable that contains qjsx + your modules. Scripts can import from the embedded modules using QJSXPATH resolution (e.g., `import utils from "utils"`).
+#### Embedding Additional Modules
+Use the `-D` flag to embed modules that aren't directly imported but should be available to dynamically loaded scripts:
 
-#### Auto-Launching Applications
 ```bash
-# Create an application that automatically runs a specific script
-./qjsx-compile bin/my-app app_modules/ '%/main.js --production'
+# Embed modules for dynamic loading
+QJSXPATH=./libs ./bin/qjsxc -D utils -D config -o runtime bootstrap.js
 
-# The resulting binary is a complete application
-./bin/my-app                     # Automatically runs main.js with --production flag
-./bin/my-app extra args          # main.js gets extra args appended
+# External scripts can now import these modules
+./runtime external-script.js      # Can use import { ... } from "utils"
 ```
 
-The `%` placeholder expands to the temporary directory containing your extracted modules at runtime. This allows you to create single-file applications that automatically execute your main script with predefined arguments.
+This is how `qjsx-node` is built - it compiles a minimal bootstrap with all node modules embedded using `-D` flags, creating a single native executable that can run any script with Node.js compatibility.
 
 ### Architecture
 

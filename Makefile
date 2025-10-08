@@ -72,9 +72,9 @@ $(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h q
 $(OBJ_DIR)/qjsxc.o: $(OBJ_DIR)/qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
-# Build qjsx-node (self-extracting script with embedded node modules and qjsx binary)
-$(QJSX_NODE_PROG): qjsx-run.template node/* $(QJSX_PROG) qjsx-compile | $(BIN_DIR)
-	./qjsx-compile $@ node
+# Build qjsx-node (standalone executable with embedded node modules)
+$(QJSX_NODE_PROG): qjsx-node-bootstrap.js node/* $(QJSXC_PROG) | $(BIN_DIR)
+	QJSXPATH=node ./bin/qjsxc -D node/fs -D node/process -D node/child_process -D node/crypto -o $@ qjsx-node-bootstrap.js
 
 # Build QuickJS dependencies
 quickjs-deps:
@@ -111,13 +111,12 @@ test-qjsxc-dynamic: $(QJSXC_PROG)
 # Build everything (QuickJS + qjsx)
 build: quickjs-deps all
 
-# Install qjsx, qjsx-node, qjsxc, and qjsx-compile
-install: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG) qjsx-compile
+# Install qjsx, qjsx-node, and qjsxc
+install: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG)
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_PROG) "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_NODE_PROG) "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSXC_PROG) "$(DESTDIR)$(PREFIX)/bin"
-	install -m755 qjsx-compile "$(DESTDIR)$(PREFIX)/bin"
 
 # Help target
 help:

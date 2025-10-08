@@ -40,7 +40,6 @@ run_test() {
 run_test "test_qjsxpath.sh" "QJSXPATH Module Resolution"
 run_test "test_index_resolution.sh" "Node.js-style Index Resolution"
 run_test "test_qjsx_node.sh" "qjsx-node Node.js Compatibility"
-run_test "test_qjsx_compile_args.sh" "qjsx-compile Custom Arguments"
 run_test "test_qjsxc.sh" "qjsxc Compiler with QJSXPATH"
 run_test "test_qjsxc_dynamic.sh" "qjsxc Dynamic Script Loading"
 
