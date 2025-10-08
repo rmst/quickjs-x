@@ -67,11 +67,13 @@ QJSX uses a minimal patch-based approach to extend QuickJS with QJSXPATH module 
 
 - **`qjsx.patch`**: Patch applied to `quickjs/qjs.c` during build
 - **`qjsxc.patch`**: Patch applied to `quickjs/qjsc.c` during build
+- **`quickjs-libc.patch`**: Patch applied to `quickjs/quickjs-libc.c` during build
 - **`qjsx-module-resolution.h`**: Shared module resolution logic for QJSXPATH support
 
 The patches add:
 1. Custom module loader (`qjsx_loader`) that implements QJSXPATH resolution
 2. Node.js-style index.js resolution for all imports
 3. Colon-to-slash translation (e.g., `node:fs` → `node/fs`)
+4. `import.meta.dirname` and `import.meta.filename`
 
 All original QuickJS features are preserved. The generated files maintain full compatibility with upstream QuickJS.

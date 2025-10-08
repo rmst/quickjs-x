@@ -29,7 +29,7 @@ run_test() {
     printf "%b\n" "${BLUE}Running: $2${NC}"
     echo "----------------------------------------"
 
-    if ./"$1"; then
+    if sh ./"$1"; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -42,6 +42,7 @@ run_test "test_index_resolution.sh" "Node.js-style Index Resolution"
 run_test "test_qjsx_node.sh" "qjsx-node Node.js Compatibility"
 run_test "test_qjsxc.sh" "qjsxc Compiler with QJSXPATH"
 run_test "test_qjsxc_dynamic.sh" "qjsxc Dynamic Script Loading"
+run_test "test_import_meta.sh" "import.meta (dirname, filename)"
 
 # Summary
 echo ""

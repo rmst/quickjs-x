@@ -25,9 +25,10 @@ QJSX_NODE_PROG = $(BIN_DIR)/qjsx-node
 QJSXC_PROG = $(BIN_DIR)/qjsxc
 
 # QuickJS object files (built by QuickJS)
+# Note: use our patched quickjs-libc.o to extend import.meta
 QUICKJS_OBJS = $(QUICKJS_DIR)/.obj/quickjs.o $(QUICKJS_DIR)/.obj/libregexp.o \
                $(QUICKJS_DIR)/.obj/libunicode.o $(QUICKJS_DIR)/.obj/cutils.o \
-               $(QUICKJS_DIR)/.obj/quickjs-libc.o $(QUICKJS_DIR)/.obj/dtoa.o \
+               $(OBJ_DIR)/quickjs-libc.o $(QUICKJS_DIR)/.obj/dtoa.o \
                $(QUICKJS_DIR)/.obj/repl.o
 
 # Default target
@@ -41,7 +42,7 @@ $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
 # Build qjsx executable
-$(QJSX_PROG): $(OBJ_DIR)/qjsx.o quickjs-deps | $(BIN_DIR)
+$(QJSX_PROG): $(OBJ_DIR)/qjsx.o $(OBJ_DIR)/quickjs-libc.o quickjs-deps | $(BIN_DIR)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsx.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
 
@@ -54,7 +55,7 @@ $(OBJ_DIR)/qjsx.o: $(OBJ_DIR)/qjsx.c qjsx-module-resolution.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsxc executable
-$(QJSXC_PROG): $(OBJ_DIR)/qjsxc.o quickjs-deps | $(BIN_DIR)
+$(QJSXC_PROG): $(OBJ_DIR)/qjsxc.o $(OBJ_DIR)/quickjs-libc.o quickjs-deps | $(BIN_DIR)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsxc.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
 	cp $(QUICKJS_DIR)/*.h $(BIN_DIR)/
@@ -71,6 +72,13 @@ $(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h q
 # Build qjsxc.o from the patched source
 $(OBJ_DIR)/qjsxc.o: $(OBJ_DIR)/qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -I. -I$(QUICKJS_DIR) -c -o $@ $<
+
+# Patch and build quickjs-libc (adds import.meta.dirname)
+$(OBJ_DIR)/quickjs-libc.c: $(QUICKJS_DIR)/quickjs-libc.c quickjs-libc.patch | $(OBJ_DIR)
+	patch -p0 < quickjs-libc.patch -o $@ $(QUICKJS_DIR)/quickjs-libc.c
+
+$(OBJ_DIR)/quickjs-libc.o: $(OBJ_DIR)/quickjs-libc.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsx-node (standalone executable with embedded node modules)
 $(QJSX_NODE_PROG): qjsx-node-bootstrap.js node/* $(QJSXC_PROG) | $(BIN_DIR)

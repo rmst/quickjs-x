@@ -1,0 +1,53 @@
+--- quickjs/quickjs-libc.c
++++ quickjs-libc.c
+@@ -587,6 +587,50 @@
+     JS_DefinePropertyValueStr(ctx, meta_obj, "main",
+                               JS_NewBool(ctx, is_main),
+                               JS_PROP_C_W_E);
++    /* convenience: provide import.meta.filename and import.meta.dirname similar to Node.js */
++    {
++        const char *path_part = buf;
++        if (!strncmp(path_part, "file://", 7))
++            path_part += 7;
++
++        JS_DefinePropertyValueStr(ctx, meta_obj, "filename",
++                                  JS_NewString(ctx, path_part),
++                                  JS_PROP_C_W_E);
++
++        char dir[PATH_MAX + 16];
++        pstrcpy(dir, sizeof(dir), path_part);
++#ifdef _WIN32
++        {
++            char *fslash = strrchr(dir, '/');
++            char *bslash = strrchr(dir, '\\');
++            char *sep = fslash;
++            if (!sep || (bslash && bslash > sep)) sep = bslash;
++            if (sep) {
++                if (sep == dir)
++                    sep[1] = '\0';
++                else
++                    *sep = '\0';
++            } else {
++                pstrcpy(dir, sizeof(dir), ".");
++            }
++        }
++#else
++        {
++            char *sep = strrchr(dir, '/');
++            if (sep) {
++                if (sep == dir)
++                    sep[1] = '\0';
++                else
++                    *sep = '\0';
++            } else {
++                pstrcpy(dir, sizeof(dir), ".");
++            }
++        }
++#endif
++        JS_DefinePropertyValueStr(ctx, meta_obj, "dirname",
++                                  JS_NewString(ctx, dir),
++                                  JS_PROP_C_W_E);
++    }
+     JS_FreeValue(ctx, meta_obj);
+     return 0;
+ }
