@@ -81,8 +81,8 @@ $(OBJ_DIR)/quickjs-libc.o: $(OBJ_DIR)/quickjs-libc.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsx-node (standalone executable with embedded node modules)
-$(QJSX_NODE_PROG): qjsx-node-bootstrap.js node/* $(QJSXC_PROG) | $(BIN_DIR)
-	QJSXPATH=node ./bin/qjsxc -D node/fs -D node/process -D node/child_process -D node/crypto -o $@ qjsx-node-bootstrap.js
+$(QJSX_NODE_PROG): qjsx-node-bootstrap.js qjsx-node/node/* $(QJSXC_PROG) | $(BIN_DIR)
+	QJSXPATH=./qjsx-node ./bin/qjsxc -D node:fs -D node:process -D node:child_process -D node:crypto -o $@ qjsx-node-bootstrap.js
 
 # Build QuickJS dependencies
 quickjs-deps:
