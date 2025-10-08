@@ -15,13 +15,14 @@ CFLAGS_OPT = $(CFLAGS) -O2 -flto
 LDFLAGS = -g -flto -rdynamic
 LIBS = -lm -ldl -lpthread
 
-# Build directories
-BIN_DIR = bin
-OBJ_DIR = $(BIN_DIR)/obj
+# Build directories (can be overridden: make BIN_DIR=/tmp/build)
+BIN_DIR ?= bin
+OBJ_DIR ?= $(BIN_DIR)/obj
 
 # Program names
 QJSX_PROG = $(BIN_DIR)/qjsx
 QJSX_NODE_PROG = $(BIN_DIR)/qjsx-node
+QJSXC_PROG = $(BIN_DIR)/qjsxc
 
 # QuickJS object files (built by QuickJS)
 QUICKJS_OBJS = $(QUICKJS_DIR)/.obj/quickjs.o $(QUICKJS_DIR)/.obj/libregexp.o \
@@ -30,7 +31,7 @@ QUICKJS_OBJS = $(QUICKJS_DIR)/.obj/quickjs.o $(QUICKJS_DIR)/.obj/libregexp.o \
                $(QUICKJS_DIR)/.obj/repl.o
 
 # Default target
-all: $(QJSX_PROG) $(QJSX_NODE_PROG)
+all: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG)
 
 # Create directories
 $(BIN_DIR):
@@ -45,8 +46,17 @@ $(QJSX_PROG): $(OBJ_DIR)/qjsx.o quickjs-deps | $(BIN_DIR)
 	chmod +x $@
 
 # Build qjsx.o from our source
-$(OBJ_DIR)/qjsx.o: qjsx.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -I$(QUICKJS_DIR) -c -o $@ $<
+$(OBJ_DIR)/qjsx.o: qjsx.c qjsx-module-resolution.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS_OPT) -I. -c -o $@ $<
+
+# Build qjsxc executable
+$(QJSXC_PROG): $(OBJ_DIR)/qjsxc.o quickjs-deps | $(BIN_DIR)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsxc.o $(QUICKJS_OBJS) $(LIBS)
+	chmod +x $@
+
+# Build qjsxc.o from our source
+$(OBJ_DIR)/qjsxc.o: qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS_OPT) -I. -c -o $@ $<
 
 # Build qjsx-node (self-extracting script with embedded node modules and qjsx binary)
 $(QJSX_NODE_PROG): qjsx-run.template node/* $(QJSX_PROG) qjsx-compile | $(BIN_DIR)
@@ -65,7 +75,7 @@ clean-all: clean
 	$(MAKE) -C $(QUICKJS_DIR) clean
 
 # Test targets
-test: $(QJSX_PROG) $(QJSX_NODE_PROG)
+test: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG)
 	@echo "Running QJSX test suite..."
 	./tests/run_all.sh
 
@@ -78,31 +88,40 @@ test-index: $(QJSX_PROG)
 test-qjsx-node: $(QJSX_NODE_PROG)
 	./tests/test_qjsx_node.sh
 
+test-qjsxc: $(QJSXC_PROG)
+	./tests/test_qjsxc.sh
+
+test-qjsxc-dynamic: $(QJSXC_PROG)
+	./tests/test_qjsxc_dynamic.sh
+
 # Build everything (QuickJS + qjsx)
 build: quickjs-deps all
 
-# Install qjsx, qjsx-node, and qjsx-compile
-install: $(QJSX_PROG) $(QJSX_NODE_PROG) qjsx-compile
+# Install qjsx, qjsx-node, qjsxc, and qjsx-compile
+install: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG) qjsx-compile
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_PROG) "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 $(QJSX_NODE_PROG) "$(DESTDIR)$(PREFIX)/bin"
+	install -m755 $(QJSXC_PROG) "$(DESTDIR)$(PREFIX)/bin"
 	install -m755 qjsx-compile "$(DESTDIR)$(PREFIX)/bin"
 
 # Help target
 help:
 	@echo "QJSX Makefile targets:"
-	@echo "  all         - Build qjsx and qjsx-node executables"
-	@echo "  build       - Build QuickJS dependencies and qjsx"
+	@echo "  all         - Build qjsx, qjsx-node, and qjsxc executables"
+	@echo "  build       - Build QuickJS dependencies and all programs"
 	@echo "  test        - Run all tests"
 	@echo "  test-qjsxpath - Run QJSXPATH module resolution tests"
 	@echo "  test-index  - Run Node.js-style index.js resolution tests"
 	@echo "  test-qjsx-node - Run qjsx-node Node.js compatibility tests"
-	@echo "  clean       - Clean qjsx build artifacts"
+	@echo "  test-qjsxc  - Run qjsxc compiler with QJSXPATH tests"
+	@echo "  clean       - Clean build artifacts"
 	@echo "  clean-all   - Clean everything including QuickJS"
-	@echo "  install     - Install qjsx to \$$(PREFIX)/bin"
+	@echo "  install     - Install all programs to \$$(PREFIX)/bin"
 	@echo ""
 	@echo "Usage examples:"
 	@echo "  make build && make test"
 	@echo "  QJSXPATH=./my_modules ./bin/qjsx script.js"
+	@echo "  QJSXPATH=./my_modules ./bin/qjsxc -o app.c app.js"
 
-.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node
+.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node test-qjsxc test-qjsxc-dynamic
