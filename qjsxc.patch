@@ -1,0 +1,198 @@
+--- quickjs/qjsc.c	2025-06-07 19:01:16.621306468 +0000
++++ qjsxc.c	2025-10-08 07:02:32.431705174 +0000
+@@ -1,5 +1,8 @@
+ /*
+- * QuickJS command line compiler
++ * QJSXC - QuickJS Compiler with QJSXPATH module resolution
++ *
++ * Based on QuickJS command line compiler by Fabrice Bellard
++ * Modified to support QJSXPATH module resolution
+  *
+  * Copyright (c) 2018-2021 Fabrice Bellard
+  *
+@@ -35,6 +38,7 @@
+ 
+ #include "cutils.h"
+ #include "quickjs-libc.h"
++#include "qjsx-module-resolution.h"
+ 
+ typedef struct {
+     char *name;
+@@ -236,6 +240,48 @@
+     pstrcpy(cname, cname_size, cname1);
+ }
+ 
++static void emit_qjsx_module_resolution(FILE *fo) {
++    FILE *hf;
++    char line[1024];
++    int skip_initial_comments = 1;
++
++    hf = fopen("qjsx-module-resolution.h", "r");
++    if (!hf) {
++        fprintf(stderr, "Warning: Could not open qjsx-module-resolution.h, module resolution disabled\n");
++        return;
++    }
++
++    fprintf(fo, "/* QJSXPATH Module Resolution (from qjsx-module-resolution.h) */\n");
++
++    while (fgets(line, sizeof(line), hf)) {
++        if (strstr(line, "#ifndef QJSX_MODULE_RESOLUTION_H") ||
++            strstr(line, "#define QJSX_MODULE_RESOLUTION_H")) {
++            continue;
++        }
++
++        if (strstr(line, "#endif") && strstr(line, "QJSX_MODULE_RESOLUTION_H")) {
++            continue;
++        }
++
++        if (strstr(line, "#include")) {
++            continue;
++        }
++
++        if (skip_initial_comments) {
++            if (line[0] == '#' || strstr(line, "static ")) {
++                skip_initial_comments = 0;
++            } else {
++                continue;
++            }
++        }
++
++        fputs(line, fo);
++    }
++
++    fprintf(fo, "\n");
++    fclose(hf);
++}
++
+ JSModuleDef *jsc_module_loader(JSContext *ctx,
+                                const char *module_name, void *opaque,
+                                JSValueConst attributes)
+@@ -262,9 +308,33 @@
+         uint8_t *buf;
+         char cname[1024];
+         int res;
+-        
+-        buf = js_load_file(ctx, &buf_len, module_name);
++        const char *resolved_name = module_name;
++        char *translated_name = NULL;
++        char *qjsxpath_resolved = NULL;
++        char *index_resolved = NULL;
++
++        translated_name = translate_colons_to_slashes(ctx, module_name);
++        const char *lookup_name = translated_name ? translated_name : module_name;
++
++        if (lookup_name[0] != '.' && lookup_name[0] != '/') {
++            qjsxpath_resolved = resolve_qjsxpath(ctx, lookup_name);
++            if (qjsxpath_resolved) {
++                resolved_name = qjsxpath_resolved;
++            }
++        }
++
++        if (!qjsxpath_resolved) {
++            index_resolved = resolve_with_index(ctx, lookup_name);
++            if (index_resolved) {
++                resolved_name = index_resolved;
++            }
++        }
++
++        buf = js_load_file(ctx, &buf_len, resolved_name);
+         if (!buf) {
++            if (translated_name) js_free(ctx, translated_name);
++            if (qjsxpath_resolved) js_free(ctx, qjsxpath_resolved);
++            if (index_resolved) js_free(ctx, index_resolved);
+             JS_ThrowReferenceError(ctx, "could not load module filename '%s'",
+                                    module_name);
+             return NULL;
+@@ -282,12 +352,19 @@
+                 flags = 0;
+             val = JS_ParseJSON2(ctx, (char *)buf, buf_len, module_name, flags);
+             js_free(ctx, buf);
+-            if (JS_IsException(val))
++            if (JS_IsException(val)) {
++                if (translated_name) js_free(ctx, translated_name);
++                if (qjsxpath_resolved) js_free(ctx, qjsxpath_resolved);
++                if (index_resolved) js_free(ctx, index_resolved);
+                 return NULL;
++            }
+             /* create a dummy module */
+             m = JS_NewCModule(ctx, module_name, js_module_dummy_init);
+             if (!m) {
+                 JS_FreeValue(ctx, val);
++                if (translated_name) js_free(ctx, translated_name);
++                if (qjsxpath_resolved) js_free(ctx, qjsxpath_resolved);
++                if (index_resolved) js_free(ctx, index_resolved);
+                 return NULL;
+             }
+ 
+@@ -311,8 +388,12 @@
+             func_val = JS_Eval(ctx, (char *)buf, buf_len, module_name,
+                                JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+             js_free(ctx, buf);
+-            if (JS_IsException(func_val))
++            if (JS_IsException(func_val)) {
++                if (translated_name) js_free(ctx, translated_name);
++                if (qjsxpath_resolved) js_free(ctx, qjsxpath_resolved);
++                if (index_resolved) js_free(ctx, index_resolved);
+                 return NULL;
++            }
+             get_c_name(cname, sizeof(cname), module_name);
+             if (namelist_find(&cname_list, cname)) {
+                 find_unique_cname(cname, sizeof(cname));
+@@ -323,6 +404,9 @@
+             m = JS_VALUE_GET_PTR(func_val);
+             JS_FreeValue(ctx, func_val);
+         }
++        if (translated_name) js_free(ctx, translated_name);
++        if (qjsxpath_resolved) js_free(ctx, qjsxpath_resolved);
++        if (index_resolved) js_free(ctx, index_resolved);
+     }
+     return m;
+ }
+@@ -766,8 +850,38 @@
+ 
+     if (output_type != OUTPUT_C) {
+         fprintf(fo, "#include \"quickjs-libc.h\"\n"
++                "#include <sys/stat.h>\n"
++                "#include <unistd.h>\n"
+                 "\n"
+                 );
++
++        emit_qjsx_module_resolution(fo);
++
++        fprintf(fo,
++                "static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, JSValueConst attributes) {\n"
++                "    char *translated_name = translate_colons_to_slashes(ctx, name);\n"
++                "    const char *module_name = translated_name ? translated_name : name;\n"
++                "    if (module_name[0] != '.' && module_name[0] != '/') {\n"
++                "        char *path = resolve_qjsxpath(ctx, module_name);\n"
++                "        if (path) {\n"
++                "            JSModuleDef *mod = js_module_loader(ctx, path, opaque, attributes);\n"
++                "            js_free(ctx, path);\n"
++                "            if (translated_name) js_free(ctx, translated_name);\n"
++                "            return mod;\n"
++                "        }\n"
++                "    }\n"
++                "    char *resolved_path = resolve_with_index(ctx, module_name);\n"
++                "    if (resolved_path) {\n"
++                "        JSModuleDef *mod = js_module_loader(ctx, resolved_path, opaque, attributes);\n"
++                "        js_free(ctx, resolved_path);\n"
++                "        if (translated_name) js_free(ctx, translated_name);\n"
++                "        return mod;\n"
++                "    }\n"
++                "    JSModuleDef *result = js_module_loader(ctx, module_name, opaque, attributes);\n"
++                "    if (translated_name) js_free(ctx, translated_name);\n"
++                "    return result;\n"
++                "}\n"
++                "\n");
+     } else {
+         fprintf(fo, "#include <inttypes.h>\n"
+                 "\n"
+@@ -840,7 +954,7 @@
+ 
+         /* add the module loader if necessary */
+         if (feature_bitmap & (1 << FE_MODULE_LOADER)) {
+-            fprintf(fo, "  JS_SetModuleLoaderFunc2(rt, NULL, js_module_loader, js_module_check_attributes, NULL);\n");
++            fprintf(fo, "  JS_SetModuleLoaderFunc2(rt, NULL, qjsx_loader, js_module_check_attributes, NULL);\n");
+         }
+ 
+         fprintf(fo,

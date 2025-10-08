@@ -45,18 +45,26 @@ $(QJSX_PROG): $(OBJ_DIR)/qjsx.o quickjs-deps | $(BIN_DIR)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsx.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
 
-# Build qjsx.o from our source
-$(OBJ_DIR)/qjsx.o: qjsx.c qjsx-module-resolution.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -I. -c -o $@ $<
+# Generate qjsx.c from quickjs/qjs.c by applying the patch
+$(OBJ_DIR)/qjsx.c: $(QUICKJS_DIR)/qjs.c qjsx.patch qjsx-module-resolution.h | $(OBJ_DIR)
+	patch -p0 < qjsx.patch -o $@ $(QUICKJS_DIR)/qjs.c
+
+# Build qjsx.o from the patched source
+$(OBJ_DIR)/qjsx.o: $(OBJ_DIR)/qjsx.c qjsx-module-resolution.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsxc executable
 $(QJSXC_PROG): $(OBJ_DIR)/qjsxc.o quickjs-deps | $(BIN_DIR)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsxc.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
 
-# Build qjsxc.o from our source
-$(OBJ_DIR)/qjsxc.o: qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -I. -c -o $@ $<
+# Generate qjsxc.c from quickjs/qjsc.c by applying the patch
+$(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h | $(OBJ_DIR)
+	patch -p0 < qjsxc.patch -o $@ $(QUICKJS_DIR)/qjsc.c
+
+# Build qjsxc.o from the patched source
+$(OBJ_DIR)/qjsxc.o: $(OBJ_DIR)/qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsx-node (self-extracting script with embedded node modules and qjsx binary)
 $(QJSX_NODE_PROG): qjsx-run.template node/* $(QJSX_PROG) qjsx-compile | $(BIN_DIR)

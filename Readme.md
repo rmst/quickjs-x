@@ -62,3 +62,18 @@ This creates a portable executable that contains qjsx + your modules. Scripts ca
 ```
 
 The `%` placeholder expands to the temporary directory containing your extracted modules at runtime. This allows you to create single-file applications that automatically execute your main script with predefined arguments.
+
+### Architecture
+
+QJSX uses a minimal patch-based approach to extend QuickJS with QJSXPATH module resolution:
+
+- **`qjsx.patch`**: Patch applied to `quickjs/qjs.c` during build
+- **`qjsxc.patch`**: Patch applied to `quickjs/qjsc.c` during build
+- **`qjsx-module-resolution.h`**: Shared module resolution logic for QJSXPATH support
+
+The patches add:
+1. Custom module loader (`qjsx_loader`) that implements QJSXPATH resolution
+2. Node.js-style index.js resolution for all imports
+3. Colon-to-slash translation (e.g., `node:fs` → `node/fs`)
+
+All original QuickJS features are preserved. The generated files maintain full compatibility with upstream QuickJS.

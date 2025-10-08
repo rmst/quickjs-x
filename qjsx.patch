@@ -1,0 +1,77 @@
+--- quickjs/qjs.c	2025-06-07 19:01:16.621142805 +0000
++++ qjsx.c	2025-10-08 06:52:43.300262014 +0000
+@@ -42,10 +42,38 @@
+ 
+ #include "cutils.h"
+ #include "quickjs-libc.h"
++#include "qjsx-module-resolution.h"
+ 
+ extern const uint8_t qjsc_repl[];
+ extern const uint32_t qjsc_repl_size;
+ 
++static JSModuleDef *qjsx_loader(JSContext *ctx, const char *name, void *opaque, JSValueConst attributes) {
++    char *translated_name = translate_colons_to_slashes(ctx, name);
++    const char *module_name = translated_name ? translated_name : name;
++
++    if (module_name[0] != '.' && module_name[0] != '/') {
++        char *path = resolve_qjsxpath(ctx, module_name);
++        if (path) {
++            JSModuleDef *mod = js_module_loader(ctx, path, opaque, attributes);
++            js_free(ctx, path);
++            if (translated_name) js_free(ctx, translated_name);
++            return mod;
++        }
++    }
++
++    char *resolved_path = resolve_with_index(ctx, module_name);
++    if (resolved_path) {
++        JSModuleDef *mod = js_module_loader(ctx, resolved_path, opaque, attributes);
++        js_free(ctx, resolved_path);
++        if (translated_name) js_free(ctx, translated_name);
++        return mod;
++    }
++
++    JSModuleDef *result = js_module_loader(ctx, module_name, opaque, attributes);
++    if (translated_name) js_free(ctx, translated_name);
++    return result;
++}
++
+ static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
+                     const char *filename, int eval_flags)
+ {
+@@ -283,11 +311,11 @@
+     return v;
+ }
+ 
+-#define PROG_NAME "qjs"
++#define PROG_NAME "qjsx"
+ 
+ void help(void)
+ {
+-    printf("QuickJS version " CONFIG_VERSION "\n"
++    printf("QJSX (QuickJS with QJSXPATH) version " CONFIG_VERSION "\n"
+            "usage: " PROG_NAME " [options] [file [args]]\n"
+            "-h  --help         list options\n"
+            "-e  --eval EXPR    evaluate EXPR\n"
+@@ -303,7 +331,11 @@
+            "    --no-unhandled-rejection  ignore unhandled promise rejections\n"
+            "-s                    strip all the debug info\n"
+            "    --strip-source    strip the source code\n"
+-           "-q  --quit         just instantiate the interpreter and quit\n");
++           "-q  --quit         just instantiate the interpreter and quit\n"
++           "\n"
++           "QJSXPATH module resolution:\n"
++           "  Set QJSXPATH environment variable for Node.js-style module resolution.\n"
++           "  Example: QJSXPATH=./my_modules:./lib qjsx script.js\n");
+     exit(1);
+ }
+ 
+@@ -465,7 +497,7 @@
+     }
+ 
+     /* loader for ES6 modules */
+-    JS_SetModuleLoaderFunc2(rt, NULL, js_module_loader, js_module_check_attributes, NULL);
++    JS_SetModuleLoaderFunc2(rt, NULL, qjsx_loader, js_module_check_attributes, NULL);
+ 
+     if (dump_unhandled_promise_rejection) {
+         JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker,
