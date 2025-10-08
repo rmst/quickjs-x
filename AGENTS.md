@@ -3,7 +3,7 @@ This is a wrapper around the Quickjs Javascript engine with a slight modificatio
 
 ### Important: At the start of every new conversation
 - Read all of the following documents:
-	- quickjs/doc/quickjs.texi
+	- @quickjs/doc/quickjs.texi
 - Check the last few git commits (and list the files changed) to get a feeling for what has been worked on recently.
 
 ### Building
