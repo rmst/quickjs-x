@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Test qjsx-compile with custom arguments and % substitution
 
 set -e
@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Testing qjsx-compile with custom arguments and % substitution...${NC}"
+printf "%b\n" "${BLUE}Testing qjsx-compile with custom arguments and % substitution...${NC}"
 
 # Create temporary test directory
 TEMP_DIR=$(mktemp -d)
@@ -64,18 +64,18 @@ if ./qjsx-compile "$TEMP_DIR/test-app" "$TEMP_DIR/app_libs" '%/subdir/../main.js
         
         # Check if the expected output is present
         if echo "$OUTPUT" | grep -q "Auto-launch test successful!"; then
-            echo -e "${GREEN}✅ qjsx-compile custom arguments test passed!${NC}"
+            printf "%b\n" "${GREEN}✅ qjsx-compile custom arguments test passed!${NC}"
             exit 0
         else
-            echo -e "${RED}❌ Expected output not found in app execution${NC}"
+            printf "%b\n" "${RED}❌ Expected output not found in app execution${NC}"
             exit 1
         fi
     else
-        echo -e "${RED}❌ Auto-launching app failed to execute${NC}"
+        printf "%b\n" "${RED}❌ Auto-launching app failed to execute${NC}"
         echo "Error output: $OUTPUT"
         exit 1
     fi
 else
-    echo -e "${RED}❌ Failed to build self-extracting app${NC}"
+    printf "%b\n" "${RED}❌ Failed to build self-extracting app${NC}"
     exit 1
 fi

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Test qjsx-node Node.js compatibility wrapper
 
 set -e
@@ -10,11 +10,11 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Testing qjsx-node Node.js compatibility wrapper...${NC}"
+printf "%b\n" "${BLUE}Testing qjsx-node Node.js compatibility wrapper...${NC}"
 
 # Check if qjsx-node exists
 if [ ! -f "./bin/qjsx-node" ]; then
-    echo -e "${RED}❌ qjsx-node executable not found. Run 'make build' first.${NC}"
+    printf "%b\n" "${RED}❌ qjsx-node executable not found. Run 'make build' first.${NC}"
     exit 1
 fi
 
@@ -95,9 +95,9 @@ echo ""
 
 # Run the test
 if ./bin/qjsx-node "$TEMP_DIR/test_node_compat.js"; then
-    echo -e "${GREEN}✅ qjsx-node Node.js compatibility test passed!${NC}"
+    printf "%b\n" "${GREEN}✅ qjsx-node Node.js compatibility test passed!${NC}"
     exit 0
 else
-    echo -e "${RED}❌ qjsx-node Node.js compatibility test failed!${NC}"
+    printf "%b\n" "${RED}❌ qjsx-node Node.js compatibility test failed!${NC}"
     exit 1
 fi

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Test Node.js-style index.js resolution functionality
 
 set -e
@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Testing Node.js-style index.js resolution...${NC}"
+printf "%b\n" "${BLUE}Testing Node.js-style index.js resolution...${NC}"
 
 # Create temporary test directory
 TEMP_DIR=$(mktemp -d)
@@ -45,9 +45,9 @@ echo "  - direct_file.js (name → name.js resolution)"
 echo ""
 
 if ./bin/qjsx "$TEMP_DIR/test_script.js"; then
-    echo -e "${GREEN}✅ Index.js resolution test passed!${NC}"
+    printf "%b\n" "${GREEN}✅ Index.js resolution test passed!${NC}"
     exit 0
 else
-    echo -e "${RED}❌ Index.js resolution test failed!${NC}"
+    printf "%b\n" "${RED}❌ Index.js resolution test failed!${NC}"
     exit 1
 fi

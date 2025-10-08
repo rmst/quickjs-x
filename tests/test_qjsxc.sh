@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Test qjsxc compiler with QJSXPATH module resolution functionality
 
 set -e
@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Testing qjsxc with QJSXPATH module resolution...${NC}"
+printf "%b\n" "${BLUE}Testing qjsxc with QJSXPATH module resolution...${NC}"
 
 # Create temporary test directory
 TEMP_DIR=$(mktemp -d)
@@ -64,37 +64,24 @@ echo "  - helper.js (relative import)"
 echo "Setting QJSXPATH=$TEMP_DIR/modules"
 echo ""
 
-# Step 1: Compile with qjsxc (-e flag to output complete C file with main())
+# Step 1: Compile with qjsxc to standalone executable
 echo "Step 1: Compiling with qjsxc..."
-if ! QJSXPATH="$TEMP_DIR/modules" ./bin/qjsxc -e -o "$TEMP_DIR/test_app.c" "$TEMP_DIR/test_app.js" 2>&1; then
-    echo -e "${RED}❌ qjsxc compilation failed!${NC}"
+if ! QJSXPATH="$TEMP_DIR/modules" ./bin/qjsxc -o "$TEMP_DIR/test_app" "$TEMP_DIR/test_app.js" 2>&1; then
+    printf "%b\n" "${RED}❌ qjsxc compilation failed!${NC}"
     exit 1
 fi
 
-# Check if C file was created
-if [ ! -f "$TEMP_DIR/test_app.c" ]; then
-    echo -e "${RED}❌ qjsxc did not generate C file!${NC}"
-    exit 1
-fi
-
-echo "✅ C code generated successfully"
-echo ""
-
-# Step 2: Compile C code with gcc
-echo "Step 2: Compiling C code with gcc..."
-if ! gcc -Iquickjs -o "$TEMP_DIR/test_app" "$TEMP_DIR/test_app.c" \
-    quickjs/.obj/quickjs.o quickjs/.obj/libregexp.o quickjs/.obj/libunicode.o \
-    quickjs/.obj/cutils.o quickjs/.obj/quickjs-libc.o quickjs/.obj/dtoa.o \
-    -lm -ldl -lpthread 2>&1; then
-    echo -e "${RED}❌ gcc compilation failed!${NC}"
+# Check if executable was created
+if [ ! -f "$TEMP_DIR/test_app" ]; then
+    printf "%b\n" "${RED}❌ qjsxc did not generate executable!${NC}"
     exit 1
 fi
 
 echo "✅ Executable generated successfully"
 echo ""
 
-# Step 3: Run the executable
-echo "Step 3: Running the compiled executable..."
+# Step 2: Run the executable
+echo "Step 2: Running the compiled executable..."
 # Note: The executable may abort after running due to a QuickJS GC cleanup issue,
 # but if it produces the correct output first, the test passes.
 OUTPUT=$("$TEMP_DIR/test_app" 2>&1 || true)  # Ignore exit code, check output instead
@@ -106,11 +93,11 @@ if echo "$OUTPUT" | grep -q "Hello, qjsxc" && \
    echo "$OUTPUT" | grep -q "2 + 3 = 5" && \
    echo "$OUTPUT" | grep -q "PI = 3.14159" && \
    echo "$OUTPUT" | grep -q "All qjsxc tests passed"; then
-    echo -e "${GREEN}✅ qjsxc test passed!${NC}"
+    printf "%b\n" "${GREEN}✅ qjsxc test passed!${NC}"
     echo "(Note: QuickJS GC cleanup warnings can be ignored)"
     exit 0
 else
-    echo -e "${RED}❌ qjsxc test failed - output verification failed!${NC}"
+    printf "%b\n" "${RED}❌ qjsxc test failed - output verification failed!${NC}"
     echo "Expected output to contain: Hello, qjsxc, 2 + 3 = 5, PI = 3.14159, All qjsxc tests passed"
     exit 1
 fi

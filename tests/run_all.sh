@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Run all QJSX tests
 
 set -e
@@ -11,12 +11,12 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}🧪 Running QJSX Test Suite${NC}"
+printf "%b\n" "${YELLOW}🧪 Running QJSX Test Suite${NC}"
 echo "=================================="
 
 # Check if qjsx is built
 if [ ! -f "../bin/qjsx" ]; then
-    echo -e "${RED}❌ qjsx executable not found. Run 'make build' first.${NC}"
+    printf "%b\n" "${RED}❌ qjsx executable not found. Run 'make build' first.${NC}"
     exit 1
 fi
 
@@ -25,14 +25,11 @@ TESTS_FAILED=0
 
 # Function to run a test
 run_test() {
-    local test_script="$1"
-    local test_name="$2"
-    
     echo ""
-    echo -e "${BLUE}Running: $test_name${NC}"
+    printf "%b\n" "${BLUE}Running: $2${NC}"
     echo "----------------------------------------"
-    
-    if ./"$test_script"; then
+
+    if ./"$1"; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -50,14 +47,14 @@ run_test "test_qjsxc_dynamic.sh" "qjsxc Dynamic Script Loading"
 # Summary
 echo ""
 echo "=================================="
-echo -e "${YELLOW}Test Results:${NC}"
-echo -e "  ${GREEN}Passed: $TESTS_PASSED${NC}"
-echo -e "  ${RED}Failed: $TESTS_FAILED${NC}"
+printf "%b\n" "${YELLOW}Test Results:${NC}"
+printf "%b\n" "  ${GREEN}Passed: $TESTS_PASSED${NC}"
+printf "%b\n" "  ${RED}Failed: $TESTS_FAILED${NC}"
 
 if [ $TESTS_FAILED -eq 0 ]; then
-    echo -e "${GREEN}🎉 All tests passed!${NC}"
+    printf "%b\n" "${GREEN}🎉 All tests passed!${NC}"
     exit 0
 else
-    echo -e "${RED}💥 Some tests failed.${NC}"
+    printf "%b\n" "${RED}💥 Some tests failed.${NC}"
     exit 1
 fi

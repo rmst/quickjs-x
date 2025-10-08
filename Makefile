@@ -57,14 +57,20 @@ $(OBJ_DIR)/qjsx.o: $(OBJ_DIR)/qjsx.c qjsx-module-resolution.h | $(OBJ_DIR)
 $(QJSXC_PROG): $(OBJ_DIR)/qjsxc.o quickjs-deps | $(BIN_DIR)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsxc.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
+	cp $(QUICKJS_DIR)/*.h $(BIN_DIR)/
+	cp $(QUICKJS_DIR)/libquickjs.a $(BIN_DIR)/ 2>/dev/null || true
+
+# Generate embedded header from qjsx-module-resolution.h
+qjsx-module-resolution-embedded.h: qjsx-module-resolution.h embed-header.sh
+	./embed-header.sh
 
 # Generate qjsxc.c from quickjs/qjsc.c by applying the patch
-$(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h | $(OBJ_DIR)
+$(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h qjsx-module-resolution-embedded.h | $(OBJ_DIR)
 	patch -p0 < qjsxc.patch -o $@ $(QUICKJS_DIR)/qjsc.c
 
 # Build qjsxc.o from the patched source
 $(OBJ_DIR)/qjsxc.o: $(OBJ_DIR)/qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
+	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -DCONFIG_LTO -I. -I$(QUICKJS_DIR) -c -o $@ $<
 
 # Build qjsx-node (self-extracting script with embedded node modules and qjsx binary)
 $(QJSX_NODE_PROG): qjsx-run.template node/* $(QJSX_PROG) qjsx-compile | $(BIN_DIR)

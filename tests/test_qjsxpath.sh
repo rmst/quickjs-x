@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Test QJSXPATH module resolution functionality
 
 set -e
@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Testing QJSXPATH module resolution...${NC}"
+printf "%b\n" "${BLUE}Testing QJSXPATH module resolution...${NC}"
 
 # Create temporary test directory
 TEMP_DIR=$(mktemp -d)
@@ -47,9 +47,9 @@ echo "Setting QJSXPATH=$TEMP_DIR/modules"
 echo ""
 
 if QJSXPATH="$TEMP_DIR/modules" ./bin/qjsx "$TEMP_DIR/test_script.js"; then
-    echo -e "${GREEN}✅ QJSXPATH test passed!${NC}"
+    printf "%b\n" "${GREEN}✅ QJSXPATH test passed!${NC}"
     exit 0
 else
-    echo -e "${RED}❌ QJSXPATH test failed!${NC}"
+    printf "%b\n" "${RED}❌ QJSXPATH test failed!${NC}"
     exit 1
 fi

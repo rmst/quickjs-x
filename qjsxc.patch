@@ -1,5 +1,5 @@
 --- quickjs/qjsc.c	2025-06-07 19:01:16.621306468 +0000
-+++ qjsxc.c	2025-10-08 07:02:32.431705174 +0000
++++ bin/obj/qjsxc.c	2025-10-08 09:48:23.565080774 +0000
 @@ -1,5 +1,8 @@
  /*
 - * QuickJS command line compiler
@@ -10,64 +10,28 @@
   *
   * Copyright (c) 2018-2021 Fabrice Bellard
   *
-@@ -35,6 +38,7 @@
+@@ -35,6 +38,8 @@
  
  #include "cutils.h"
  #include "quickjs-libc.h"
 +#include "qjsx-module-resolution.h"
++#include "qjsx-module-resolution-embedded.h"
  
  typedef struct {
      char *name;
-@@ -236,6 +240,48 @@
+@@ -236,6 +241,11 @@
      pstrcpy(cname, cname_size, cname1);
  }
  
 +static void emit_qjsx_module_resolution(FILE *fo) {
-+    FILE *hf;
-+    char line[1024];
-+    int skip_initial_comments = 1;
-+
-+    hf = fopen("qjsx-module-resolution.h", "r");
-+    if (!hf) {
-+        fprintf(stderr, "Warning: Could not open qjsx-module-resolution.h, module resolution disabled\n");
-+        return;
-+    }
-+
-+    fprintf(fo, "/* QJSXPATH Module Resolution (from qjsx-module-resolution.h) */\n");
-+
-+    while (fgets(line, sizeof(line), hf)) {
-+        if (strstr(line, "#ifndef QJSX_MODULE_RESOLUTION_H") ||
-+            strstr(line, "#define QJSX_MODULE_RESOLUTION_H")) {
-+            continue;
-+        }
-+
-+        if (strstr(line, "#endif") && strstr(line, "QJSX_MODULE_RESOLUTION_H")) {
-+            continue;
-+        }
-+
-+        if (strstr(line, "#include")) {
-+            continue;
-+        }
-+
-+        if (skip_initial_comments) {
-+            if (line[0] == '#' || strstr(line, "static ")) {
-+                skip_initial_comments = 0;
-+            } else {
-+                continue;
-+            }
-+        }
-+
-+        fputs(line, fo);
-+    }
-+
-+    fprintf(fo, "\n");
-+    fclose(hf);
++    fprintf(fo, "/* QJSXPATH Module Resolution */\n");
++    fprintf(fo, "%s", qjsx_module_resolution_code);
 +}
 +
  JSModuleDef *jsc_module_loader(JSContext *ctx,
                                 const char *module_name, void *opaque,
                                 JSValueConst attributes)
-@@ -262,9 +308,33 @@
+@@ -262,9 +272,33 @@
          uint8_t *buf;
          char cname[1024];
          int res;
@@ -103,7 +67,7 @@
              JS_ThrowReferenceError(ctx, "could not load module filename '%s'",
                                     module_name);
              return NULL;
-@@ -282,12 +352,19 @@
+@@ -282,12 +316,19 @@
                  flags = 0;
              val = JS_ParseJSON2(ctx, (char *)buf, buf_len, module_name, flags);
              js_free(ctx, buf);
@@ -124,7 +88,7 @@
                  return NULL;
              }
  
-@@ -311,8 +388,12 @@
+@@ -311,8 +352,12 @@
              func_val = JS_Eval(ctx, (char *)buf, buf_len, module_name,
                                 JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
              js_free(ctx, buf);
@@ -138,7 +102,7 @@
              get_c_name(cname, sizeof(cname), module_name);
              if (namelist_find(&cname_list, cname)) {
                  find_unique_cname(cname, sizeof(cname));
-@@ -323,6 +404,9 @@
+@@ -323,6 +368,9 @@
              m = JS_VALUE_GET_PTR(func_val);
              JS_FreeValue(ctx, func_val);
          }
@@ -148,7 +112,7 @@
      }
      return m;
  }
-@@ -766,8 +850,38 @@
+@@ -766,8 +814,38 @@
  
      if (output_type != OUTPUT_C) {
          fprintf(fo, "#include \"quickjs-libc.h\"\n"
@@ -187,7 +151,7 @@
      } else {
          fprintf(fo, "#include <inttypes.h>\n"
                  "\n"
-@@ -840,7 +954,7 @@
+@@ -840,7 +918,7 @@
  
          /* add the module loader if necessary */
          if (feature_bitmap & (1 << FE_MODULE_LOADER)) {

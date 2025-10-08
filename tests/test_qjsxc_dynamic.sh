@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Test qjsxc-compiled binaries loading external scripts with QJSXPATH imports
 
 set -e
@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Testing qjsxc-compiled runtime with QJSXPATH for external scripts...${NC}"
+printf "%b\n" "${BLUE}Testing qjsxc-compiled runtime with QJSXPATH for external scripts...${NC}"
 
 # Create temporary test directory
 TEMP_DIR=$(mktemp -d)
@@ -74,22 +74,13 @@ console.log("✅ Relative import works:", msg);
 EOF
 
 echo "Step 1: Compiling runtime with qjsxc..."
-if ! ./bin/qjsxc -e -o "$TEMP_DIR/runtime.c" "$TEMP_DIR/runtime.js" 2>&1 | head -3; then
-    echo -e "${RED}❌ qjsxc compilation failed!${NC}"
-    exit 1
-fi
-
-echo "Step 2: Compiling C code with gcc..."
-if ! gcc -Iquickjs -o "$TEMP_DIR/runtime" "$TEMP_DIR/runtime.c" \
-    quickjs/.obj/quickjs.o quickjs/.obj/libregexp.o quickjs/.obj/libunicode.o \
-    quickjs/.obj/cutils.o quickjs/.obj/quickjs-libc.o quickjs/.obj/dtoa.o \
-    -lm -ldl -lpthread 2>&1 | head -3; then
-    echo -e "${RED}❌ gcc compilation failed!${NC}"
+if ! ./bin/qjsxc -o "$TEMP_DIR/runtime" "$TEMP_DIR/runtime.js" 2>&1 | head -3; then
+    printf "%b\n" "${RED}❌ qjsxc compilation failed!${NC}"
     exit 1
 fi
 
 echo ""
-echo "Step 3: Testing external script with QJSXPATH bare imports..."
+echo "Step 2: Testing external script with QJSXPATH bare imports..."
 OUTPUT=$(cd "$TEMP_DIR" && QJSXPATH=modules ./runtime external_app.js 2>&1 || true)
 echo "$OUTPUT" | grep -v "Assertion\|quickjs.c" || true
 echo ""
@@ -98,26 +89,26 @@ echo ""
 if echo "$OUTPUT" | grep -q "✅ External script loaded" && \
    echo "$OUTPUT" | grep -q "✅ Bare import works: Hello from QJSXPATH module: qjsxc" && \
    echo "$OUTPUT" | grep -q "✅ Math works: 5 === 5"; then
-    echo -e "${GREEN}✅ QJSXPATH bare imports work!${NC}"
+    printf "%b\n" "${GREEN}✅ QJSXPATH bare imports work!${NC}"
 else
-    echo -e "${RED}❌ QJSXPATH test failed!${NC}"
+    printf "%b\n" "${RED}❌ QJSXPATH test failed!${NC}"
     echo "Expected output not found"
     exit 1
 fi
 
 echo ""
-echo "Step 4: Testing external script with relative imports..."
+echo "Step 3: Testing external script with relative imports..."
 OUTPUT=$(cd "$TEMP_DIR" && ./runtime external_local.js 2>&1 || true)
 echo "$OUTPUT" | grep -v "Assertion\|quickjs.c" || true
 echo ""
 
 if echo "$OUTPUT" | grep -q "✅ Relative import works: from local"; then
-    echo -e "${GREEN}✅ Relative imports work!${NC}"
+    printf "%b\n" "${GREEN}✅ Relative imports work!${NC}"
 else
-    echo -e "${RED}❌ Relative import test failed!${NC}"
+    printf "%b\n" "${RED}❌ Relative import test failed!${NC}"
     exit 1
 fi
 
 echo ""
-echo -e "${GREEN}✅ All qjsxc dynamic loading tests passed!${NC}"
+printf "%b\n" "${GREEN}✅ All qjsxc dynamic loading tests passed!${NC}"
 echo "(Note: qjsxc-compiled binaries can now load external scripts with QJSXPATH imports)"
