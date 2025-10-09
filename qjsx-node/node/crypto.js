@@ -246,7 +246,7 @@ export class Hash {
 const W = new Int32Array(N.workWords);
 let sharedBuffer;
 let sharedOffset = 0;
-const hex32 = num => (num + 0x100000000).toString(16).substr(-8);
+const hex32 = num => (num + 0x100000000).toString(16).slice(-8);
 const swapLE = (c => (((c << 24) & 0xff000000) | ((c << 8) & 0xff0000) | ((c >> 8) & 0xff00) | ((c >> 24) & 0xff)));
 const swapBE = (c => c);
 const swap32 = isBE() ? swapBE : swapLE;

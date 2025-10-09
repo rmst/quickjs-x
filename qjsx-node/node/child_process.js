@@ -43,7 +43,17 @@ import * as os from 'os';
  * ```
  */
 export const execFileSync = (file, args = [], options = {}) => {
-	let env = options.env || std.getenv();  // Use the provided environment or current one
+	if (typeof file !== 'string') {
+		throw new TypeError('file must be a string');
+	}
+	if (!Array.isArray(args)) {
+		throw new TypeError('args must be an array');
+	}
+	if (options != null && typeof options !== 'object') {
+		throw new TypeError('options must be an object');
+	}
+
+	let env = options.env || std.getenviron();  // Use the provided environment or current one
 	let cwd = options.cwd || undefined;    // Optional working directory
 
 	// Create pipes for stdin, stdout, and stderr
@@ -82,6 +92,11 @@ export const execFileSync = (file, args = [], options = {}) => {
 	}
 
 	let exitCode = os.exec([file, ...args], execOptions);
+
+	// Close the parent's copy of stdinRead after the child has inherited it
+	if (options.input) {
+		os.close(stdinRead);
+	}
 
   // Read stdout and stderr from pipes if not forwarded
 	let output = "";
@@ -147,16 +162,13 @@ export const execFileSync = (file, args = [], options = {}) => {
  * @returns {string} - The string contents of the file descriptor.
  */
 function readFromFd(fd) {
-  // Open a FILE object from the file descriptor for reading
   let file = std.fdopen(fd, 'r');
 
-  // Read all the contents as a string
-if(file === null) 
-  return ''
+  if(file === null) {
+    throw new Error(`Failed to open file descriptor: ${fd}`);
+  }
 
-let output = file.readAsString();
-
-  // Close the FILE object to release resources
+  let output = file.readAsString();
   file.close();
 
   return output;

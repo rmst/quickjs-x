@@ -2,10 +2,20 @@ import * as std from 'std';
 import * as os from 'os';
 
 
-// Mimic fs.writeFileSync in Node.js
 export const writeFileSync = (path, data, options) => {
-  const mode = (options && options.mode) || 'w';
-  const file = std.open(path, mode);
+  options = typeof options === 'string' ? { encoding: options } : (options || {});
+
+  const flag = options.flag || 'w';
+
+  if (options.encoding != null && options.encoding !== 'utf8' && options.encoding !== 'utf-8') {
+    throw new Error(`Unsupported encoding: ${options.encoding}. Only utf8 is supported.`);
+  }
+
+  if (typeof data !== 'string') {
+    throw new TypeError('Data must be a string. Binary data is not supported.');
+  }
+
+  const file = std.open(path, flag);
   if (!file) {
     throw new Error(`Failed to open file: ${path}`);
   }
@@ -17,44 +27,32 @@ export const writeFileSync = (path, data, options) => {
 }
 
 
-// Mimic fs.readFileSync in Node.js
-export const readFileSync = (path, options=null) => {
-  let encoding = options;  // Assuming options can be directly the encoding string
+export const readFileSync = (path, options='utf8') => {
+  options = typeof options === 'string' ? { encoding: options } : (options || {});
 
-  const file = std.open(path, 'r');
+  const encoding = options.encoding;
+  const flag = options.flag || 'r';
+
+  if (encoding == null) {
+    throw new Error('Encoding must be specified. Binary reads are not supported.');
+  }
+
+  if (encoding !== 'utf8' && encoding !== 'utf-8') {
+    throw new Error(`Unsupported encoding: ${encoding}. Only utf8 is supported.`);
+  }
+
+  const file = std.open(path, flag);
   if (!file) {
     throw new Error(`Failed to open file: ${path}`);
   }
 
   try {
-    // If the encoding is explicitly set to 'utf8', read the file as a UTF-8 string
-    if (encoding === "utf8") {
-      return file.readAsString()
-    } else if (encoding === null) {
-      // Determine the total file size to allocate a buffer of appropriate size
-      file.seek(0, std.SEEK_END); // Move to the end of the file
-      let fileSize = Number(file.tello()); // Get the file size
-      file.seek(0, std.SEEK_SET); // Reset position to the beginning of the file for reading
-
-      // Initialize a buffer for reading the entire file content
-      let buffer = new ArrayBuffer(fileSize);
-      let bytesRead = file.read(buffer, 0, fileSize);
-
-      if (bytesRead !== fileSize) {
-        throw new Error("Failed to read the entire file");
-      }
-
-      return new Uint8Array(buffer); // Returning Uint8Array for consistency
-    }
-    else {
-      throw Error(`Unsupported encoding: ${encoding}`)
-    }
+    return file.readAsString()
   } finally {
     file.close();
   }
 }
 
-// Mimic fs.readdirSync in Node.js
 export const readdirSync = (path) => {
   const [files, error] = os.readdir(path);
   if (error !== 0) {
@@ -99,7 +97,6 @@ function createStatsObject(statResult) {
   };
 }
 
-// Function to mimic fs.statSync in Node.js using QuickJS's os.stat
 export const statSync = (path) => {
   const [statResult, err] = os.stat(path);
   if (err !== 0) {
@@ -108,7 +105,6 @@ export const statSync = (path) => {
   return createStatsObject(statResult);
 }
 
-// Function to mimic fs.lstatSync in Node.js using QuickJS's os.lstat
 export const lstatSync = (path) => {
   const [statResult, err] = os.lstat(path);
   if (err !== 0) {
@@ -119,10 +115,6 @@ export const lstatSync = (path) => {
 
 
 export function existsSync(path) {
-	try {
-		statSync(path)
-		return true;
-	} catch (e) {
-		return false;
-	}
+	const [_, err] = os.stat(path);
+	return err === 0;
 }
