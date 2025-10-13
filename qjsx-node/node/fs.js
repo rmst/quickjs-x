@@ -61,6 +61,37 @@ export const readdirSync = (path) => {
   return files;
 }
 
+export const mkdirSync = (path, { mode = 0o777, recursive = false } = {}) => {
+
+  if (!recursive) {
+    const result = os.mkdir(path, mode);
+    if (result !== 0) {
+      throw new Error(`Failed to create directory: ${path}`);
+    }
+    return;
+  }
+
+  const parts = path.split('/').filter(p => p.length > 0);
+  let currentPath = path.startsWith('/') ? '/' : '';
+
+  for (const part of parts) {
+    currentPath = currentPath === '/' ? `/${part}` : `${currentPath}/${part}`;
+
+    const [statResult, err] = os.stat(currentPath);
+    if (err === 0) {
+      if ((statResult.mode & os.S_IFMT) !== os.S_IFDIR) {
+        throw new Error(`Path exists but is not a directory: ${currentPath}`);
+      }
+      continue;
+    }
+
+    const result = os.mkdir(currentPath, mode);
+    if (result !== 0) {
+      throw new Error(`Failed to create directory: ${currentPath}`);
+    }
+  }
+}
+
 
 
 // Helper function to create a Stats object from stat or lstat results
