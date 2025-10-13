@@ -58,7 +58,7 @@ export const readdirSync = (path) => {
   if (error !== 0) {
     throw new Error(`Failed to read directory: ${path}`);
   }
-  return files;
+  return files.filter(name => name !== '.' && name !== '..')
 }
 
 export const mkdirSync = (path, { mode = 0o777, recursive = false } = {}) => {
