@@ -161,6 +161,13 @@ export function linkSync(existingPath, newPath) {
 	throw new Error('Hard links are not supported');
 }
 
+export function symlinkSync(target, path) {
+	const result = os.symlink(target, path);
+	if (result !== 0) {
+		throw new Error(`Failed to create symlink from ${target} to ${path}`);
+	}
+}
+
 export function rmSync(path, options = {}) {
 	const recursive = options.recursive || false;
 	const force = options.force || false;
