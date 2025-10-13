@@ -149,3 +149,60 @@ export function existsSync(path) {
 	const [_, err] = os.stat(path);
 	return err === 0;
 }
+
+export function unlinkSync(path) {
+	const result = os.remove(path);
+	if (result !== 0) {
+		throw new Error(`Failed to unlink file: ${path}`);
+	}
+}
+
+export function linkSync(existingPath, newPath) {
+	throw new Error('Hard links are not supported');
+}
+
+export function rmSync(path, options = {}) {
+	const recursive = options.recursive || false;
+	const force = options.force || false;
+
+	const [stat, statErr] = os.stat(path);
+
+	if (statErr !== 0) {
+		if (force) {
+			return;
+		}
+		throw new Error(`Failed to stat path: ${path}`);
+	}
+
+	const isDir = (stat.mode & os.S_IFMT) === os.S_IFDIR;
+
+	if (isDir && !recursive) {
+		try {
+			const files = readdirSync(path);
+			if (files.length > 0) {
+				throw new Error(`Directory not empty: ${path}`);
+			}
+		} catch (err) {
+			if (!force) throw err;
+			return;
+		}
+	}
+
+	if (isDir && recursive) {
+		try {
+			const files = readdirSync(path);
+			for (const file of files) {
+				const fullPath = `${path}/${file}`;
+				rmSync(fullPath, { recursive: true, force });
+			}
+		} catch (err) {
+			if (!force) throw err;
+			return;
+		}
+	}
+
+	const result = os.remove(path);
+	if (result !== 0 && !force) {
+		throw new Error(`Failed to remove: ${path}`);
+	}
+}
