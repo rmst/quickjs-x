@@ -46,7 +46,7 @@ echo "  - modules/utils.js (direct file import)"
 echo "Setting QJSXPATH=$TEMP_DIR/modules"
 echo ""
 
-if QJSXPATH="$TEMP_DIR/modules" ./bin/qjsx "$TEMP_DIR/test_script.js"; then
+if QJSXPATH="$TEMP_DIR/modules" ${QJSX_BIN_DIR}/qjsx "$TEMP_DIR/test_script.js"; then
     printf "%b\n" "${GREEN}✅ QJSXPATH test passed!${NC}"
     exit 0
 else

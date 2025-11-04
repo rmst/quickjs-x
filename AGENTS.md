@@ -2,10 +2,8 @@
 - Read all of the following documents:
 	- @Readme.md
 	- @quickjs/doc/quickjs.texi
+	- @Makefile
 - Check the last few git commits to get a feeling for what has been worked on recently.
-
-### Building
-Before building read @Makefile. To build never just do `make $whatever`. Always use a temporary directory as the build dir, e.g. `make BIN_DIR=/tmp/build $whatever`we.
 
 ### Code comments
 Never write comments describing what changed in a code edit. Comments should describe the current situation. Change notes belong in the commit message.

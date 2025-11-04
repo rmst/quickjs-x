@@ -4,6 +4,9 @@
 set -e
 cd "$(dirname "$0")"
 
+# Detect platform
+PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -11,14 +14,17 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-printf "%b\n" "${YELLOW}🧪 Running QJSX Test Suite${NC}"
+printf "%b\n" "${YELLOW}🧪 Running QJSX Test Suite (${PLATFORM})${NC}"
 echo "=================================="
 
 # Check if qjsx is built
-if [ ! -f "../bin/qjsx" ]; then
+if [ ! -f "../bin/${PLATFORM}/qjsx" ]; then
     printf "%b\n" "${RED}❌ qjsx executable not found. Run 'make build' first.${NC}"
     exit 1
 fi
+
+# Export for use by test scripts (use path from root since test scripts cd there)
+export QJSX_BIN_DIR="./bin/${PLATFORM}"
 
 TESTS_PASSED=0
 TESTS_FAILED=0

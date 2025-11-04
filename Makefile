@@ -1,10 +1,9 @@
 #
 # QJSX Makefile
-# 
+#
 # Builds the qjsx executable with QJSXPATH module resolution support
 #
 
-QUICKJS_DIR = quickjs
 VERSION = 2024-01-13
 
 # Compiler settings (mirroring QuickJS defaults)
@@ -16,105 +15,124 @@ LDFLAGS = -g -rdynamic
 LIBS = -lm -ldl -lpthread
 
 # Build directories (can be overridden: make BIN_DIR=/tmp/build)
-BIN_DIR ?= bin
-OBJ_DIR ?= $(BIN_DIR)/obj
+PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+BIN_DIR ?= bin/$(PLATFORM)
 
 # Program names
 QJSX_PROG = $(BIN_DIR)/qjsx
 QJSX_NODE_PROG = $(BIN_DIR)/qjsx-node
 QJSXC_PROG = $(BIN_DIR)/qjsxc
 
-# QuickJS object files (built by QuickJS)
+# QuickJS object files (from our copied and built QuickJS)
 # Note: use our patched quickjs-libc.o to extend import.meta
-QUICKJS_OBJS = $(QUICKJS_DIR)/.obj/quickjs.o $(QUICKJS_DIR)/.obj/libregexp.o \
-               $(QUICKJS_DIR)/.obj/libunicode.o $(QUICKJS_DIR)/.obj/cutils.o \
-               $(OBJ_DIR)/quickjs-libc.o $(QUICKJS_DIR)/.obj/dtoa.o \
-               $(QUICKJS_DIR)/.obj/repl.o
+QUICKJS_OBJS = $(BIN_DIR)/quickjs/.obj/quickjs.o $(BIN_DIR)/quickjs/.obj/libregexp.o \
+               $(BIN_DIR)/quickjs/.obj/libunicode.o $(BIN_DIR)/quickjs/.obj/cutils.o \
+               $(BIN_DIR)/obj/quickjs-libc.o $(BIN_DIR)/quickjs/.obj/dtoa.o \
+               $(BIN_DIR)/quickjs/.obj/repl.o
+
+# Convenience symlinks
+QJSX_LINK = bin/qjsx
+QJSX_NODE_LINK = bin/qjsx-node
+QJSXC_LINK = bin/qjsxc
 
 # Default target
-all: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG)
+all: quickjs-deps $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG) convenience-links
 
 # Create directories
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
+$(BIN_DIR)/obj:
+	mkdir -p $(BIN_DIR)/obj
 
 # Build qjsx executable
-$(QJSX_PROG): $(OBJ_DIR)/qjsx.o $(OBJ_DIR)/quickjs-libc.o quickjs-deps | $(BIN_DIR)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsx.o $(QUICKJS_OBJS) $(LIBS)
+$(QJSX_PROG): $(BIN_DIR)/obj/qjsx.o $(BIN_DIR)/obj/quickjs-libc.o quickjs-deps | $(BIN_DIR)
+	$(CC) $(LDFLAGS) -o $@ $(BIN_DIR)/obj/qjsx.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
 
 # Generate qjsx.c from quickjs/qjs.c by applying the patch
-$(OBJ_DIR)/qjsx.c: $(QUICKJS_DIR)/qjs.c qjsx.patch qjsx-module-resolution.h | $(OBJ_DIR)
-	patch -p0 < qjsx.patch -o $@ $(QUICKJS_DIR)/qjs.c
+$(BIN_DIR)/obj/qjsx.c: quickjs/qjs.c qjsx.patch qjsx-module-resolution.h | $(BIN_DIR)/obj
+	patch -p0 < qjsx.patch -o $@ quickjs/qjs.c
 
 # Build qjsx.o from the patched source
-$(OBJ_DIR)/qjsx.o: $(OBJ_DIR)/qjsx.c qjsx-module-resolution.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
+$(BIN_DIR)/obj/qjsx.o: $(BIN_DIR)/obj/qjsx.c qjsx-module-resolution.h | $(BIN_DIR)/obj
+	$(CC) $(CFLAGS_OPT) -I. -I$(BIN_DIR)/quickjs -c -o $@ $<
 
 # Build qjsxc executable
-$(QJSXC_PROG): $(OBJ_DIR)/qjsxc.o $(OBJ_DIR)/quickjs-libc.o quickjs-deps | $(BIN_DIR)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ_DIR)/qjsxc.o $(QUICKJS_OBJS) $(LIBS)
+$(QJSXC_PROG): $(BIN_DIR)/obj/qjsxc.o $(BIN_DIR)/obj/quickjs-libc.o quickjs-deps | $(BIN_DIR)
+	$(CC) $(LDFLAGS) -o $@ $(BIN_DIR)/obj/qjsxc.o $(QUICKJS_OBJS) $(LIBS)
 	chmod +x $@
-	cp $(QUICKJS_DIR)/*.h $(BIN_DIR)/
-	cp $(QUICKJS_DIR)/libquickjs.a $(BIN_DIR)/ 2>/dev/null || true
+	cp $(BIN_DIR)/quickjs/*.h $(BIN_DIR)/
+	cp $(BIN_DIR)/quickjs/libquickjs.a $(BIN_DIR)/
 
 # Generate embedded header from qjsx-module-resolution.h
 qjsx-module-resolution-embedded.h: qjsx-module-resolution.h embed-header.sh
 	./embed-header.sh
 
 # Generate qjsxc.c from quickjs/qjsc.c by applying the patch
-$(OBJ_DIR)/qjsxc.c: $(QUICKJS_DIR)/qjsc.c qjsxc.patch qjsx-module-resolution.h qjsx-module-resolution-embedded.h | $(OBJ_DIR)
-	patch -p0 < qjsxc.patch -o $@ $(QUICKJS_DIR)/qjsc.c
+$(BIN_DIR)/obj/qjsxc.c: quickjs/qjsc.c qjsxc.patch qjsx-module-resolution.h qjsx-module-resolution-embedded.h | $(BIN_DIR)/obj
+	patch -p0 < qjsxc.patch -o $@ quickjs/qjsc.c
 
 # Build qjsxc.o from the patched source
-$(OBJ_DIR)/qjsxc.o: $(OBJ_DIR)/qjsxc.c qjsx-module-resolution.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -I. -I$(QUICKJS_DIR) -c -o $@ $<
+$(BIN_DIR)/obj/qjsxc.o: $(BIN_DIR)/obj/qjsxc.c qjsx-module-resolution.h | $(BIN_DIR)/obj
+	$(CC) $(CFLAGS_OPT) -DCONFIG_CC=\"$(CC)\" -DCONFIG_PREFIX=\"/usr/local\" -I. -I$(BIN_DIR)/quickjs -c -o $@ $<
 
 # Patch and build quickjs-libc (adds import.meta.dirname)
-$(OBJ_DIR)/quickjs-libc.c: $(QUICKJS_DIR)/quickjs-libc.c quickjs-libc.patch | $(OBJ_DIR)
-	patch -p0 < quickjs-libc.patch -o $@ $(QUICKJS_DIR)/quickjs-libc.c
+$(BIN_DIR)/obj/quickjs-libc.c: quickjs/quickjs-libc.c quickjs-libc.patch | $(BIN_DIR)/obj
+	patch -p0 < quickjs-libc.patch -o $@ quickjs/quickjs-libc.c
 
-$(OBJ_DIR)/quickjs-libc.o: $(OBJ_DIR)/quickjs-libc.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS_OPT) -I. -I$(QUICKJS_DIR) -c -o $@ $<
+$(BIN_DIR)/obj/quickjs-libc.o: $(BIN_DIR)/obj/quickjs-libc.c | $(BIN_DIR)/obj
+	$(CC) $(CFLAGS_OPT) -I. -I$(BIN_DIR)/quickjs -c -o $@ $<
 
 # Build qjsx-node (standalone executable with embedded node modules)
-$(QJSX_NODE_PROG): qjsx-node-bootstrap.js qjsx-node/node/* $(QJSXC_PROG) | $(BIN_DIR)
-	QJSXPATH=./qjsx-node ./bin/qjsxc -D node:fs -D node:process -D node:child_process -D node:crypto -o $@ qjsx-node-bootstrap.js
+$(QJSX_NODE_PROG): qjsx-node-bootstrap.js qjsx-node/node/* $(QJSXC_PROG) quickjs-deps | $(BIN_DIR)
+	QJSXPATH=./qjsx-node $(QJSXC_PROG) -D node:fs -D node:process -D node:child_process -D node:crypto -o $@ qjsx-node-bootstrap.js
 
-# Build QuickJS dependencies
-quickjs-deps:
-	$(MAKE) -C $(QUICKJS_DIR) all
+# Create convenience symlinks in bin/ directory
+convenience-links: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG)
+	@mkdir -p bin
+	@ln -sf $(PLATFORM)/qjsx $(QJSX_LINK)
+	@ln -sf $(PLATFORM)/qjsx-node $(QJSX_NODE_LINK)
+	@ln -sf $(PLATFORM)/qjsxc $(QJSXC_LINK)
 
-# Clean our build artifacts
+# Build QuickJS by copying it to our bin dir and building it there
+quickjs-deps: | $(BIN_DIR)
+	@if [ ! -d "$(BIN_DIR)/quickjs" ]; then \
+		echo "Copying QuickJS to $(BIN_DIR)/quickjs..."; \
+		cp -r quickjs $(BIN_DIR)/quickjs; \
+	fi
+	$(MAKE) -C $(BIN_DIR)/quickjs .obj/quickjs.o .obj/libregexp.o .obj/libunicode.o .obj/cutils.o .obj/dtoa.o .obj/repl.o libquickjs.a
+
+# Clean build artifacts
 clean:
 	rm -rf $(BIN_DIR)
 
-# Clean everything including QuickJS
-clean-all: clean
-	$(MAKE) -C $(QUICKJS_DIR) clean
+# Clean all platforms
+clean-all:
+	rm -rf bin/
 
 # Test targets
 test: $(QJSX_PROG) $(QJSX_NODE_PROG) $(QJSXC_PROG)
 	@echo "Running QJSX test suite..."
-	./tests/run_all.sh
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/run_all.sh
 
 test-qjsxpath: $(QJSX_PROG)
-	./tests/test_qjsxpath.sh
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/test_qjsxpath.sh
 
 test-index: $(QJSX_PROG)
-	./tests/test_index_resolution.sh
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/test_index_resolution.sh
 
 test-qjsx-node: $(QJSX_NODE_PROG)
-	./tests/test_qjsx_node.sh
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/test_qjsx_node.sh
 
 test-qjsxc: $(QJSXC_PROG)
-	./tests/test_qjsxc.sh
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/test_qjsxc.sh
 
 test-qjsxc-dynamic: $(QJSXC_PROG)
-	./tests/test_qjsxc_dynamic.sh
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/test_qjsxc_dynamic.sh
+
+test-import-meta: $(QJSX_PROG)
+	QJSX_BIN_DIR=$(BIN_DIR) ./tests/test_import_meta.sh
 
 # Build everything (QuickJS + qjsx)
 build: quickjs-deps all
@@ -145,4 +163,4 @@ help:
 	@echo "  QJSXPATH=./my_modules ./bin/qjsx script.js"
 	@echo "  QJSXPATH=./my_modules ./bin/qjsxc -o app.c app.js"
 
-.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node test-qjsxc test-qjsxc-dynamic
+.PHONY: all build clean clean-all install help quickjs-deps test test-qjsxpath test-index test-qjsx-node test-qjsxc test-qjsxc-dynamic convenience-links

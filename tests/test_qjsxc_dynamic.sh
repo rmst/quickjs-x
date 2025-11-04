@@ -74,7 +74,7 @@ console.log("✅ Relative import works:", msg);
 EOF
 
 echo "Step 1: Compiling runtime with qjsxc..."
-if ! ./bin/qjsxc -o "$TEMP_DIR/runtime" "$TEMP_DIR/runtime.js" 2>&1 | head -3; then
+if ! ${QJSX_BIN_DIR}/qjsxc -o "$TEMP_DIR/runtime" "$TEMP_DIR/runtime.js" 2>&1 | head -3; then
     printf "%b\n" "${RED}❌ qjsxc compilation failed!${NC}"
     exit 1
 fi

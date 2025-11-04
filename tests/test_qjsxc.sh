@@ -66,7 +66,7 @@ echo ""
 
 # Step 1: Compile with qjsxc to standalone executable
 echo "Step 1: Compiling with qjsxc..."
-if ! QJSXPATH="$TEMP_DIR/modules" ./bin/qjsxc -o "$TEMP_DIR/test_app" "$TEMP_DIR/test_app.js" 2>&1; then
+if ! QJSXPATH="$TEMP_DIR/modules" ${QJSX_BIN_DIR}/qjsxc -o "$TEMP_DIR/test_app" "$TEMP_DIR/test_app.js" 2>&1; then
     printf "%b\n" "${RED}❌ qjsxc compilation failed!${NC}"
     exit 1
 fi

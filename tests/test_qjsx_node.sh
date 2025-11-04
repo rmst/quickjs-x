@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 printf "%b\n" "${BLUE}Testing qjsx-node Node.js compatibility wrapper...${NC}"
 
 # Check if qjsx-node exists
-if [ ! -f "./bin/qjsx-node" ]; then
+if [ ! -f "${QJSX_BIN_DIR}/qjsx-node" ]; then
     printf "%b\n" "${RED}❌ qjsx-node executable not found. Run 'make build' first.${NC}"
     exit 1
 fi
@@ -95,7 +95,7 @@ echo ""
 
 # Run the test
 # Note: qjsxc-compiled binaries may have GC cleanup warnings, so we check output instead of exit code
-OUTPUT=$(./bin/qjsx-node "$TEMP_DIR/test_node_compat.js" 2>&1 || true)
+OUTPUT=$(${QJSX_BIN_DIR}/qjsx-node "$TEMP_DIR/test_node_compat.js" 2>&1 || true)
 echo "$OUTPUT" | grep -v "Assertion\|quickjs.c"
 
 # Check if all tests passed based on output

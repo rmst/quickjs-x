@@ -12,6 +12,7 @@ NC='\033[0m'
 printf "%b\n" "${BLUE}Testing import.meta (dirname, filename)...${NC}"
 
 TEMP_DIR=$(mktemp -d)
+TEMP_DIR=$(realpath "$TEMP_DIR")
 trap "rm -rf $TEMP_DIR" EXIT
 
 # Entry module prints its dirname and filename
@@ -33,8 +34,8 @@ cat > "$TEMP_DIR/runner.mjs" << 'EOF'
 import './sub/mod.mjs';
 EOF
 
-# Resolve qjsx path: prefer BIN_DIR if provided, else default ./bin
-QJS_BIN="${BIN_DIR:-./bin}/qjsx"
+# Resolve qjsx path
+QJS_BIN="${QJSX_BIN_DIR}/qjsx"
 if [ ! -x "$QJS_BIN" ]; then
   echo "qjsx not found at $QJS_BIN" >&2
   echo "Build first, e.g.: BIN_DIR=\$(mktemp -d)/bin make build" >&2

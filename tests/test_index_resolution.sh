@@ -44,7 +44,7 @@ echo "  - simple_module/index.js (directory → index.js resolution)"
 echo "  - direct_file.js (name → name.js resolution)"
 echo ""
 
-if ./bin/qjsx "$TEMP_DIR/test_script.js"; then
+if ${QJSX_BIN_DIR}/qjsx "$TEMP_DIR/test_script.js"; then
     printf "%b\n" "${GREEN}✅ Index.js resolution test passed!${NC}"
     exit 0
 else

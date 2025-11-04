@@ -1,6 +1,5 @@
 # Build outputs
 bin/
-.obj/
 
 # OS files
 .DS_Store
