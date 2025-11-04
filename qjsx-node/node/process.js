@@ -2,12 +2,39 @@ import * as std from 'std';
 import * as os from 'os';
 
 // Create stream-like objects for stdin, stdout, stderr
-const createStream = (fd) => ({
-  fd,
-  get isTTY() {
-    return os.isatty(fd);
+const createStream = (fd) => {
+  const stream = {
+    fd,
+    get isTTY() {
+      return os.isatty(fd);
+    }
+  };
+
+  // Add write method for stdout and stderr
+  if (fd === 1 || fd === 2) {
+    stream.write = function(data, encoding, callback) {
+      // Handle optional encoding parameter
+      if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = 'utf8';
+      }
+      encoding = encoding || 'utf8';
+
+      try {
+        const file = fd === 1 ? std.out : std.err;
+        file.puts(String(data));
+        file.flush();
+        if (callback) callback();
+        return true;
+      } catch (err) {
+        if (callback) callback(err);
+        return false;
+      }
+    };
   }
-});
+
+  return stream;
+};
 
 // Event handlers storage
 const eventHandlers = new Map();
