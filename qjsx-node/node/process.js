@@ -82,8 +82,10 @@ const process = {
   stdout: createStream(1),
   stderr: createStream(2),
 
-  // Process ID (not available in QuickJS, return dummy value)
-  pid: 1,
+  // Process ID
+  get pid() {
+    return os.getpid();
+  },
 
   // Platform
   platform: os.platform || 'quickjs',
