@@ -1,6 +1,6 @@
 import { describe } from 'node:test'
 import assert from 'node:assert'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { test, testQnOnly, execAsync, $ } from './util.js'
 
@@ -163,6 +163,57 @@ describe('qn --test runner', () => {
 		// Verify suite appears exactly once (would appear 3x without dedup)
 		const matches = output.match(/unique-suite/g)
 		assert.strictEqual(matches?.length, 2) // suite header + summary
+	})
+
+	test('before/after/beforeEach/afterEach hooks run in correct order', async ({ bin, dir }) => {
+		writeFileSync(join(dir, 'hooks.test.js'), `
+			import { describe, test, before, after, beforeEach, afterEach } from 'node:test'
+			before(() => console.log('MARK:rootBefore'))
+			after(() => console.log('MARK:rootAfter'))
+			beforeEach(() => console.log('MARK:rootBE'))
+			afterEach(() => console.log('MARK:rootAE'))
+			describe('outer', () => {
+				before(() => console.log('MARK:outerBefore'))
+				after(() => console.log('MARK:outerAfter'))
+				beforeEach(() => console.log('MARK:outerBE'))
+				afterEach(() => console.log('MARK:outerAE'))
+				test('t1', () => console.log('MARK:t1'))
+				describe('inner', () => {
+					beforeEach(() => console.log('MARK:innerBE'))
+					afterEach(() => console.log('MARK:innerAE'))
+					test('t2', () => console.log('MARK:t2'))
+				})
+			})
+		`)
+
+		const output = await execAsync(bin, ['--test', './hooks.test.js'], { cwd: dir })
+		const marks = [...output.matchAll(/MARK:(\w+)/g)].map(m => m[1])
+		assert.deepStrictEqual(marks, [
+			'rootBefore', 'outerBefore',
+			'rootBE', 'outerBE', 't1', 'outerAE', 'rootAE',
+			'rootBE', 'outerBE', 'innerBE', 't2', 'innerAE', 'outerAE', 'rootAE',
+			'outerAfter', 'rootAfter',
+		])
+	})
+
+	test('beforeEach failure fails the test and skips its body', async ({ bin, dir }) => {
+		const markerPath = join(dir, 'body-ran').replace(/\\/g, '\\\\')
+		writeFileSync(join(dir, 'hook-fail.test.js'), `
+			import { describe, test, beforeEach } from 'node:test'
+			import { writeFileSync } from 'node:fs'
+			describe('s', () => {
+				beforeEach(() => { throw new Error('boom') })
+				test('t', () => writeFileSync(${JSON.stringify(markerPath)}, 'x'))
+			})
+		`)
+
+		try {
+			await execAsync(bin, ['--test', './hook-fail.test.js'], { cwd: dir })
+			assert.fail('expected non-zero exit')
+		} catch (err) {
+			assert.strictEqual(err.code, 1)
+			assert.strictEqual(existsSync(join(dir, 'body-ran')), false)
+		}
 	})
 
 	// qn-only: Node.js doesn't support negative glob patterns for --test

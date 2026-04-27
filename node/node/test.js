@@ -20,8 +20,25 @@ const CYAN = '\x1b[36m'
 const isChildProcess = !!process.env.QN_TEST_CHILD
 delete process.env.QN_TEST_CHILD
 
+/**
+ * Create an empty suite object.
+ */
+function makeSuite(name, options, parent) {
+	return {
+		name,
+		options,
+		parent,
+		tests: [],
+		suites: [],
+		before: [],
+		after: [],
+		beforeEach: [],
+		afterEach: [],
+	}
+}
+
 // Test state
-const rootSuite = { name: null, tests: [], suites: [], parent: null }
+const rootSuite = makeSuite(null, {}, null)
 let currentSuite = rootSuite
 let isRunning = false
 let hasScheduledRun = false
@@ -59,7 +76,7 @@ class TestContext {
 		this.subtests.push(subtest)
 
 		// Run the subtest immediately
-		return runTest(subtest, getIndent(this) + 1)
+		return runTest(subtest, null, getIndent(this) + 1)
 	}
 }
 
@@ -91,9 +108,24 @@ function formatDuration(ms) {
 }
 
 /**
+ * Collect hooks of a given kind from root → suite (inclusive).
+ * Used to assemble beforeEach/afterEach chains that cascade through
+ * nested describe blocks like Node's runner.
+ */
+function collectChainHooks(suite, kind) {
+	const chain = []
+	let s = suite
+	while (s) {
+		chain.unshift(s)
+		s = s.parent
+	}
+	return chain.flatMap(s => s[kind])
+}
+
+/**
  * Run a single test
  */
-async function runTest(test, indentLevel = 0) {
+async function runTest(test, parentSuite, indentLevel = 0) {
 	const { name, fn, options = {} } = test
 	const pad = indent(indentLevel)
 
@@ -113,22 +145,51 @@ async function runTest(test, indentLevel = 0) {
 
 	const context = new TestContext(name, test.parent)
 	const startTime = performance.now()
+	const errors = []
 
-	try {
-		await fn(context)
-		const duration = performance.now() - startTime
+	const beforeEachHooks = parentSuite ? collectChainHooks(parentSuite, 'beforeEach') : []
+	for (const h of beforeEachHooks) {
+		try {
+			await h.fn()
+		} catch (error) {
+			errors.push(error)
+			break
+		}
+	}
+
+	if (errors.length === 0) {
+		try {
+			await fn(context)
+		} catch (error) {
+			errors.push(error)
+		}
+	}
+
+	const afterEachHooks = parentSuite ? collectChainHooks(parentSuite, 'afterEach').reverse() : []
+	for (const h of afterEachHooks) {
+		try {
+			await h.fn()
+		} catch (error) {
+			errors.push(error)
+		}
+	}
+
+	const duration = performance.now() - startTime
+
+	if (errors.length === 0) {
 		console.log(`${pad}${GREEN}✔${RESET} ${name} ${DIM}${formatDuration(duration)}${RESET}`)
 		results.pass++
 		results.tests++
 		return { passed: true, duration }
-	} catch (error) {
-		const duration = performance.now() - startTime
-		console.log(`${pad}${RED}✖${RESET} ${name} ${DIM}${formatDuration(duration)}${RESET}`)
-		results.fail++
-		results.tests++
-		results.failures.push({ name, error, indentLevel })
-		return { passed: false, duration, error }
 	}
+
+	console.log(`${pad}${RED}✖${RESET} ${name} ${DIM}${formatDuration(duration)}${RESET}`)
+	results.fail++
+	results.tests++
+	for (const error of errors) {
+		results.failures.push({ name, error, indentLevel })
+	}
+	return { passed: false, duration, error: errors[0] }
 }
 
 /**
@@ -166,22 +227,49 @@ async function runSuite(suite, indentLevel = 0) {
 	}
 
 	const childIndent = suite.name ? indentLevel + 1 : indentLevel
+	const hookLabel = suite.name || '<root>'
 
-	if (concurrency) {
-		// Run tests and nested suites concurrently
-		const allTasks = [
-			...suite.tests.map(test => () => runTest(test, childIndent)),
-			...suite.suites.map(nested => () => runSuite(nested, childIndent)),
-		]
-		const limit = concurrency === true ? Infinity : concurrency
-		await runWithPool(allTasks, limit)
-	} else {
-		// Run sequentially (default)
-		for (const test of suite.tests) {
-			await runTest(test, childIndent)
+	let beforeFailed = false
+	for (const h of suite.before) {
+		try {
+			await h.fn()
+		} catch (error) {
+			beforeFailed = true
+			console.log(`${indent(childIndent)}${RED}✖${RESET} before hook failed`)
+			results.fail++
+			results.failures.push({ name: `${hookLabel} > before`, error, indentLevel: childIndent })
+			break
 		}
-		for (const nested of suite.suites) {
-			await runSuite(nested, childIndent)
+	}
+
+	if (!beforeFailed) {
+		if (concurrency) {
+			// Run tests and nested suites concurrently
+			const allTasks = [
+				...suite.tests.map(test => () => runTest(test, suite, childIndent)),
+				...suite.suites.map(nested => () => runSuite(nested, childIndent)),
+			]
+			const limit = concurrency === true ? Infinity : concurrency
+			await runWithPool(allTasks, limit)
+		} else {
+			// Run sequentially (default)
+			for (const test of suite.tests) {
+				await runTest(test, suite, childIndent)
+			}
+			for (const nested of suite.suites) {
+				await runSuite(nested, childIndent)
+			}
+		}
+
+		for (const h of suite.after) {
+			try {
+				await h.fn()
+			} catch (error) {
+				console.log(`${indent(childIndent)}${RED}✖${RESET} after hook failed`)
+				results.fail++
+				results.failures.push({ name: `${hookLabel} > after`, error, indentLevel: childIndent })
+				break
+			}
 		}
 	}
 
@@ -277,7 +365,7 @@ export function describe(name, optionsOrFn, maybeFn) {
 	const fn = typeof optionsOrFn === 'function' ? optionsOrFn : maybeFn
 	const options = typeof optionsOrFn === 'object' ? optionsOrFn : {}
 
-	const suite = { name, options, tests: [], suites: [], parent: currentSuite }
+	const suite = makeSuite(name, options, currentSuite)
 	currentSuite.suites.push(suite)
 
 	const previousSuite = currentSuite
@@ -336,5 +424,35 @@ test.only = function only(name, optionsOrFn, maybeFn) {
 // Alias
 export const it = test
 
+/**
+ * Register a hook that runs once before all tests in the current suite.
+ */
+export function before(fn, options = {}) {
+	currentSuite.before.push({ fn, options })
+}
+
+/**
+ * Register a hook that runs once after all tests in the current suite.
+ */
+export function after(fn, options = {}) {
+	currentSuite.after.push({ fn, options })
+}
+
+/**
+ * Register a hook that runs before each test in the current suite
+ * (and tests in nested suites).
+ */
+export function beforeEach(fn, options = {}) {
+	currentSuite.beforeEach.push({ fn, options })
+}
+
+/**
+ * Register a hook that runs after each test in the current suite
+ * (and tests in nested suites).
+ */
+export function afterEach(fn, options = {}) {
+	currentSuite.afterEach.push({ fn, options })
+}
+
 // Default export includes all functions
-export default { describe, test, it }
+export default { describe, test, it, before, after, beforeEach, afterEach }
