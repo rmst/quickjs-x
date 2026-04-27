@@ -318,6 +318,7 @@ Notes: `Readable`/`Writable` are fd-backed; `Transform`/`Duplex` are generic and
 | `equal` / `notEqual` / `deepEqual` | ⚠️ | Aliased to strict variants (not loose) |
 | `rejects` / `doesNotReject` | ✅ | |
 | `CallTracker` | ❌ | |
+| `node:assert/strict` | ✅ | Re-exports `node:assert` (qn already aliases the loose comparators to strict) |
 
 ### node:test
 

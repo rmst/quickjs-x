@@ -78,7 +78,7 @@ const DEFAULT_MODULES = [
 	"node:buffer", "node:url", "node:abort",
 	"node:fetch", "node:fetch/Headers", "node:fetch/Response",
 	"node:dgram", "node:net", "node:http", "node:http/parse",
-	"node:sqlite", "node:util", "node:assert", "node:test",
+	"node:sqlite", "node:util", "node:assert", "node:assert/strict", "node:test",
 	"node:os", "node:module", "node:timers", "node:zlib",
 	// Stubs for unimplemented node:* modules (throw NodeCompatibilityError on import)
 	"node:async_hooks", "node:cluster", "node:diagnostics_channel", "node:dns",

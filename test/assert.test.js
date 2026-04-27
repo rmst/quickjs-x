@@ -363,3 +363,33 @@ describe('node:assert shim', () => {
 		assert.deepStrictEqual(JSON.parse(output), { threw: true })
 	})
 })
+
+describe('node:assert/strict shim', () => {
+	test('default import works and aliases equal to strictEqual', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert/strict'
+			assert.equal(1, 1)
+			assert.strictEqual('a', 'a')
+			assert.deepEqual({ a: 1 }, { a: 1 })
+			let threw = false
+			try { assert.equal(1, '1') } catch (e) { threw = e.name === 'AssertionError' }
+			console.log(JSON.stringify({ threw, equalIsStrict: assert.equal === assert.strictEqual }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true, equalIsStrict: true })
+	})
+
+	test('named exports are available', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { strictEqual, deepStrictEqual, ok, equal, throws } from 'node:assert/strict'
+			ok(true)
+			strictEqual(2, 2)
+			deepStrictEqual([1, 2], [1, 2])
+			equal('x', 'x')
+			throws(() => { throw new Error('boom') }, /boom/)
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+})
