@@ -7,13 +7,23 @@
 
 import { sqlite_db } from './sqlite_native.so';
 
+// SQLite open flags (stable values from sqlite3.h)
+const SQLITE_OPEN_READONLY = 0x01;
+const SQLITE_OPEN_READWRITE = 0x02;
+const SQLITE_OPEN_CREATE = 0x04;
+const SQLITE_OPEN_URI = 0x40;
+
 export class DatabaseSync {
     #db;
     #isOpen = false;
     #path;
+    #flags;
 
     constructor(path, options = {}) {
         this.#path = path;
+        this.#flags = options.readOnly
+            ? SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
+            : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI;
         const shouldOpen = options.open !== false;
 
         if (shouldOpen) {
@@ -25,7 +35,7 @@ export class DatabaseSync {
         if (this.#isOpen) {
             throw new Error('Database is already open');
         }
-        this.#db = new sqlite_db(this.#path);
+        this.#db = new sqlite_db(this.#path, this.#flags);
         this.#isOpen = true;
     }
 

@@ -212,6 +212,89 @@ describe('node:sqlite DatabaseSync', () => {
 		assert.strictEqual(output, 'error thrown')
 	})
 
+	test('readOnly option blocks writes', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { DatabaseSync } from 'node:sqlite'
+			const db = new DatabaseSync(':memory:', { readOnly: true })
+			try {
+				db.exec('CREATE TABLE x(y INTEGER)')
+				console.log('no error')
+			} catch (e) {
+				console.log('error thrown')
+			}
+			db.close()
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.strictEqual(output, 'error thrown')
+	})
+
+	test('readOnly on existing file blocks writes', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { DatabaseSync } from 'node:sqlite'
+			const dbPath = '${dir}/ro.db'
+			const seed = new DatabaseSync(dbPath)
+			seed.exec('CREATE TABLE x(y INTEGER); INSERT INTO x VALUES (1)')
+			seed.close()
+			const db = new DatabaseSync(dbPath, { readOnly: true })
+			const row = db.prepare('SELECT y FROM x').get()
+			let blocked = false
+			try { db.exec('INSERT INTO x VALUES (2)') }
+			catch (e) { blocked = true }
+			console.log(JSON.stringify({ row, blocked }))
+			db.close()
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { row: { y: 1 }, blocked: true })
+	})
+
+	test('readOnly on nonexistent file fails to open', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { DatabaseSync } from 'node:sqlite'
+			try {
+				new DatabaseSync('${dir}/does-not-exist.db', { readOnly: true })
+				console.log('opened')
+			} catch (e) {
+				console.log('failed')
+			}
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.strictEqual(output, 'failed')
+	})
+
+	test('file: URI with mode=ro is enforced', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { DatabaseSync } from 'node:sqlite'
+			const dbPath = '${dir}/uri.db'
+			const seed = new DatabaseSync(dbPath)
+			seed.exec('CREATE TABLE x(y INTEGER); INSERT INTO x VALUES (42)')
+			seed.close()
+			const db = new DatabaseSync('file:' + dbPath + '?mode=ro')
+			const row = db.prepare('SELECT y FROM x').get()
+			let blocked = false
+			try { db.exec('INSERT INTO x VALUES (99)') }
+			catch (e) { blocked = true }
+			console.log(JSON.stringify({ row, blocked }))
+			db.close()
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { row: { y: 42 }, blocked: true })
+	})
+
+	test('file: URI with immutable=1 reads', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { DatabaseSync } from 'node:sqlite'
+			const dbPath = '${dir}/immut.db'
+			const seed = new DatabaseSync(dbPath)
+			seed.exec('CREATE TABLE x(y INTEGER); INSERT INTO x VALUES (7)')
+			seed.close()
+			const db = new DatabaseSync('file:' + dbPath + '?immutable=1')
+			console.log(JSON.stringify(db.prepare('SELECT y FROM x').get()))
+			db.close()
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { y: 7 })
+	})
+
 	test('throws on closed database', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { DatabaseSync } from 'node:sqlite'

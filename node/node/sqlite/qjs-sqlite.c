@@ -47,7 +47,7 @@ static void js_sqlite_db_finalizer(JSRuntime *rt, JSValue val) {
     }
 }
 
-/* Database constructor: new sqlite_db(path) */
+/* Database constructor: new sqlite_db(path, flags?) */
 static JSValue js_sqlite_db_ctor(JSContext *ctx, JSValueConst new_target,
                                   int argc, JSValueConst *argv) {
     JSQLiteDB *db;
@@ -55,6 +55,7 @@ static JSValue js_sqlite_db_ctor(JSContext *ctx, JSValueConst new_target,
     JSValue proto;
     const char *path;
     int rc;
+    int32_t flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI;
 
     db = js_mallocz(ctx, sizeof(*db));
     if (!db)
@@ -64,6 +65,14 @@ static JSValue js_sqlite_db_ctor(JSContext *ctx, JSValueConst new_target,
     if (!path) {
         js_free(ctx, db);
         return JS_EXCEPTION;
+    }
+
+    if (argc > 1 && !JS_IsUndefined(argv[1])) {
+        if (JS_ToInt32(ctx, &flags, argv[1])) {
+            JS_FreeCString(ctx, path);
+            js_free(ctx, db);
+            return JS_EXCEPTION;
+        }
     }
 
     proto = JS_GetPropertyStr(ctx, new_target, "prototype");
@@ -81,7 +90,7 @@ static JSValue js_sqlite_db_ctor(JSContext *ctx, JSValueConst new_target,
         return JS_EXCEPTION;
     }
 
-    rc = sqlite3_open(path, &db->db);
+    rc = sqlite3_open_v2(path, &db->db, flags, NULL);
     JS_FreeCString(ctx, path);
 
     if (rc != SQLITE_OK) {
@@ -462,7 +471,7 @@ static int js_sqlite_init(JSContext *ctx, JSModuleDef *m) {
                                countof(js_sqlite_db_proto_funcs));
     JS_SetClassProto(ctx, js_sqlite_db_class_id, proto);
 
-    class = JS_NewCFunction2(ctx, js_sqlite_db_ctor, "sqlite_db", 1,
+    class = JS_NewCFunction2(ctx, js_sqlite_db_ctor, "sqlite_db", 2,
                              JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, class, proto);
     JS_SetModuleExport(ctx, m, "sqlite_db", class);
