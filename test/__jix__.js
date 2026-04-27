@@ -43,6 +43,7 @@ export const run = {
 	default: jix.script`
 		cd ${import.meta.dirname}/..
 		make build
+		export PATH="$PWD/bin:$PATH"
 		# node --test --experimental-test-isolation=none test/*.test.js test/**/*.test.js
 		qn --test test/*.test.js test/**/*.test.js
 	`,
@@ -50,6 +51,7 @@ export const run = {
 	nonode: jix.script`
 		cd ${import.meta.dirname}/..
 		# make build
+		export PATH="$PWD/bin:$PATH"
 		export NO_NODEJS_TESTS=1
 		# node --test --experimental-test-isolation=none test/*.test.js test/**/*.test.js
 		qn --test './test/*.test.js' './test/**/*.test.js'
