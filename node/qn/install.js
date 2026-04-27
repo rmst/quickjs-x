@@ -197,6 +197,7 @@ function getCacheDir() {
  *       "git":     "https://github.com/preactjs/preact",  // required
  *       "rev":     "21dd6d04...",                          // required: 40-hex SHA
  *       "exports": { ".": "./src/index.js", ... },         // optional override
+ *       "imports": { "#x": "./src/x.ts", ... },             // optional override
  *       "build":   "make all"                              // optional escape hatch
  *     }
  *
@@ -204,6 +205,7 @@ function getCacheDir() {
  *     "server-common": {
  *       "path":    "../../web/server-common",              // required (relative to projectDir, or absolute)
  *       "exports": { ... },                                 // optional override
+ *       "imports": { ... },                                 // optional override
  *       "build":   "..."                                    // optional escape hatch
  *     }
  *
@@ -212,17 +214,21 @@ function getCacheDir() {
  *        - git+rev: fetchTree via qn:git (full SHA-1 verification);
  *        - path:    cpSync from resolved local path (working-dir contents,
  *                   uncommitted edits included).
- *   2. Rewrite the resulting package.json's `exports` field:
- *        - if `exports` is given, use it verbatim;
- *        - else if the original exports has `./dist/X.{js,mjs}` paths, rewrite
- *          them to `./src/X.ts` (default tree-mirror convention);
- *        - else leave it alone.
+ *   2. Rewrite the resulting package.json's `exports` and `imports` fields:
+ *        - if a matching override is given, use it verbatim;
+ *        - else apply the default tree-mirror rewrite:
+ *            a. collapse any conditional whose first matching `qn` or `bun`
+ *               key (in that priority order) has a string value to that
+ *               string verbatim — a common convention for source-equivalent
+ *               paths (e.g. markdown-to-jsx's `#entities` bun condition);
+ *            b. rewrite remaining `./dist/X.{js,mjs}` paths to `./src/X.ts`;
+ *        - if neither step changes anything, leave the field alone.
  *   3. If `build` is given, run it as a shell command in the materialized dir.
  *
  * Lifecycle scripts on the source package (prepare, etc.) are NOT run —
  * the spec is intended to be fully declarative.
  *
- * @param {Record<string, { git?: string, rev?: string, path?: string, exports?: object, build?: string }>} sourceDeps
+ * @param {Record<string, { git?: string, rev?: string, path?: string, exports?: object, imports?: object, build?: string }>} sourceDeps
  * @param {string} nodeModulesDir
  * @param {string} projectDir - used to resolve relative `path` entries
  */
@@ -275,13 +281,16 @@ async function installSourceDeps(sourceDeps, nodeModulesDir, projectDir) {
 			await fetchTree({ source: src.git, ref: src.rev, dest })
 		}
 
-		// Rewrite exports.
+		// Rewrite exports and imports.
 		let pkgJsonPath = join(dest, "package.json")
 		if (existsSync(pkgJsonPath)) {
 			let cloned = JSON.parse(readFileSync(pkgJsonPath, "utf8"))
-			let next = src.exports ?? rewriteDistToSource(cloned.exports)
-			if (next) {
-				cloned.exports = next
+			let nextExports = src.exports ?? rewriteDistToSource(cloned.exports)
+			let nextImports = src.imports ?? rewriteDistToSource(cloned.imports)
+			let changed = false
+			if (nextExports) { cloned.exports = nextExports; changed = true }
+			if (nextImports) { cloned.imports = nextImports; changed = true }
+			if (changed) {
 				writeFileSync(pkgJsonPath, JSON.stringify(cloned, null, 2))
 			}
 		}
@@ -298,14 +307,46 @@ async function installSourceDeps(sourceDeps, nodeModulesDir, projectDir) {
 }
 
 /**
- * Default tree-mirror rewrite: ./dist/X.{js,mjs} -> ./src/X.ts.
- * Returns null if the exports map has no /dist/ paths (or is missing).
+ * Conditions that, by convention, point at a source-equivalent path. Checked
+ * in priority order: a `qn` branch (explicit support) wins over `bun` (the
+ * common community convention — e.g. markdown-to-jsx's `#entities`).
  */
-function rewriteDistToSource(exports) {
-	if (!exports) return null
-	let json = JSON.stringify(exports)
-	if (!json.includes("/dist/")) return null
-	return JSON.parse(json.replace(/"\.\/dist\/([^"]+)\.m?js"/g, '"./src/$1.ts"'))
+const SOURCE_CONDITIONS = ["qn", "bun"]
+
+/**
+ * Default tree-mirror rewrite for an exports/imports map:
+ *   1. Where a conditional object has a string value under one of
+ *      SOURCE_CONDITIONS, collapse the whole conditional to that path verbatim.
+ *   2. Then rewrite remaining `./dist/X.{js,mjs}` paths to `./src/X.ts`.
+ * Returns null if neither step produced any change (or the input is missing).
+ */
+function rewriteDistToSource(spec) {
+	if (!spec) return null
+	let collapsed = collapseSourceConditions(spec)
+	let collapsedJson = JSON.stringify(collapsed)
+	let rewritten = collapsedJson.replace(/"\.\/dist\/([^"]+)\.m?js"/g, '"./src/$1.ts"')
+	if (rewritten === JSON.stringify(spec)) return null
+	return JSON.parse(rewritten)
+}
+
+/**
+ * Recursively replace any conditional object whose first matching
+ * SOURCE_CONDITIONS key has a string value with that string. Other shapes
+ * are walked through unchanged.
+ */
+function collapseSourceConditions(node) {
+	if (Array.isArray(node)) return node.map(collapseSourceConditions)
+	if (node && typeof node === "object") {
+		for (let cond of SOURCE_CONDITIONS) {
+			if (typeof node[cond] === "string") return node[cond]
+		}
+		let out = {}
+		for (let [k, v] of Object.entries(node)) {
+			out[k] = collapseSourceConditions(v)
+		}
+		return out
+	}
+	return node
 }
 
 /**
@@ -424,7 +465,8 @@ Supported dependency specifiers (in "dependencies"):
 
 Also supported in "sourceDependencies":
   "<name>": { "git": "<url>", "rev": "<sha>",
-              "exports": <map>, "build": "<cmd>" }
+              "exports": <map>, "imports": <map>,
+              "build": "<cmd>" }
 
 Not yet supported:
   "^1.2.3", "~1.0.0", etc.    npm registry (planned)

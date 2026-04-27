@@ -385,6 +385,137 @@ describe('qn install — sourceDependencies', () => {
 		}
 	})
 
+	test('default tree-mirror rewrites imports the same way as exports', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			imports: {
+				"#util": "./dist/util.mjs",
+				"#helpers": "./dist/helpers.js",
+			},
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir)
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.imports, {
+				"#util": "./src/util.ts",
+				"#helpers": "./src/helpers.ts",
+			})
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('explicit imports override is written verbatim', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			imports: { "#x": "./dist/x.mjs" },
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: {
+					lib: { git: repoDir, rev: sha, imports: { "#x": "./src/x.js" } },
+				},
+			}))
+
+			await install(projectDir)
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.imports, { "#x": "./src/x.js" })
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('default tree-mirror collapses bun condition to its source path', async () => {
+		// Mirrors the markdown-to-jsx convention: a `bun` condition holds the
+		// source-equivalent path, while other conditions point at dist artifacts.
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			imports: {
+				"#entities": {
+					bun: "./src/entities.generated.ts",
+					browser: {
+						import: { default: "./dist/entities.browser.js" },
+					},
+					default: { default: "./dist/entities.generated.js" },
+				},
+			},
+			exports: {
+				".": {
+					bun: "./src/index.ts",
+					default: "./dist/index.js",
+				},
+			},
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir)
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.imports, {
+				"#entities": "./src/entities.generated.ts",
+			})
+			assert.deepStrictEqual(installed.exports, {
+				".": "./src/index.ts",
+			})
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('default tree-mirror prefers qn condition over bun', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			exports: {
+				".": {
+					qn: "./src/qn-entry.ts",
+					bun: "./src/bun-entry.ts",
+					default: "./dist/index.js",
+				},
+			},
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir)
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.exports, { ".": "./src/qn-entry.ts" })
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
 	test('exports without /dist/ paths are left untouched', async () => {
 		let original = { ".": "./src/index.js" }
 		let { repoDir, sha } = makeUpstream({ name: 'lib', exports: original })
