@@ -706,8 +706,9 @@ describe('node:child_process shim', () => {
 		assert.deepStrictEqual(JSON.parse(output), { stdout: 'hello from spawn' })
 	})
 
-	// Raw bytes vs UTF-8 encoding tests (qn-specific behavior)
-	// Note: Node.js returns strings by default, qn returns Uint8Array by default
+	// Raw bytes vs UTF-8 encoding tests
+	// execFileSync defaults to bytes (matches Node's 'buffer' default).
+	// execFile (async) defaults to string (matches Node's 'utf8' default).
 	testQnOnly('execFileSync returns Uint8Array by default', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { execFileSync } from 'node:child_process'
@@ -736,10 +737,30 @@ describe('node:child_process shim', () => {
 		assert.deepStrictEqual(JSON.parse(output), { isString: true, output: 'hello' })
 	})
 
-	testQnOnly('execFile callback receives Uint8Array by default', ({ bin, dir }) => {
+	test('execFile callback receives string by default', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { execFile } from 'node:child_process'
 			execFile('echo', ['hello'], (error, stdout, stderr) => {
+				console.log(JSON.stringify({
+					stdoutIsString: typeof stdout === 'string',
+					stderrIsString: typeof stderr === 'string',
+					stdout: stdout.trim(),
+				}))
+			})
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), {
+			stdoutIsString: true,
+			stderrIsString: true,
+			stdout: 'hello',
+		})
+	})
+
+	testQnOnly('execFile callback receives Uint8Array with encoding buffer', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { execFile } from 'node:child_process'
+			execFile('echo', ['hello'], { encoding: 'buffer' }, (error, stdout, stderr) => {
 				const stdoutIsUint8 = stdout instanceof Uint8Array
 				const stderrIsUint8 = stderr instanceof Uint8Array
 				const firstByte = stdout[0]
