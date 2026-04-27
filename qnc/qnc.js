@@ -539,26 +539,48 @@ function blankTypeScriptTypes(code) {
 
 /* ---- CJS detection ---- */
 
-function isCjs(filename) {
+function isCjs(filename, source) {
 	if (filename.endsWith(".cjs")) return true
 	if (filename.endsWith(".mjs")) return false
 	if (!filename.endsWith(".js")) return false
 
-	// Walk up looking for package.json with "type": "commonjs"
+	// Walk up looking for package.json "type" field
+	let pkgType = null
 	let dir = dirname(filename)
 	while (dir && dir !== "/") {
 		const pkgPath = dir + "/package.json"
 		const content = readFile(pkgPath)
 		if (content) {
 			try {
-				const pkg = JSON.parse(content)
-				return pkg.type === "commonjs"
+				pkgType = JSON.parse(content).type ?? null
 			} catch {}
+			break
 		}
 		const parent = dirname(dir)
 		if (parent === dir) break
 		dir = parent
 	}
+	if (pkgType === "commonjs") return true
+	if (pkgType === "module") return false
+	if (source === undefined) return false
+	// Match Node's --experimental-detect-module: ESM if source has top-level
+	// import/export, otherwise CJS.
+	return !sniffEsm(source)
+}
+
+function sniffEsm(code) {
+	const stripped = code
+		.replace(/\/\*[\s\S]*?\*\//g, ' ')
+		.replace(/\/\/[^\n]*/g, '')
+	if (/(^|[\n;])\s*import\s+["'a-zA-Z_$*{]/.test(stripped)) return true
+	if (/(^|[\n;])\s*export\b/.test(stripped)) return true
+	if (/\bimport\.meta\b/.test(stripped)) return true
+	if (/\bmodule\.exports\b/.test(stripped)) return false
+	if (/(^|[\n;{])\s*exports\.[\w$]+\s*=/.test(stripped)) return false
+	if (/(^|[\n;{(=,!&|?:[])\s*require\s*\(/.test(stripped)) return false
+	if (/\b(?:__filename|__dirname)\b/.test(stripped)) return false
+	if (/(^|\n)[ \t]*(?:(?:const|let|var)\b[^=\n]*=[ \t]*)?await\s/.test(stripped)) return true
+	if (/(^|\n)[ \t]*for\s+await\b/.test(stripped)) return true
 	return false
 }
 
@@ -570,7 +592,7 @@ function wrapCjs(source) {
 
 function transformSource(source, filename) {
 	source = stripTypeScript(source, filename)
-	if (isCjs(filename)) source = wrapCjs(source)
+	if (isCjs(filename, source)) source = wrapCjs(source)
 	return source
 }
 

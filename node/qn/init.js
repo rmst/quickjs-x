@@ -32,7 +32,7 @@ __qn_setSourceTransform((source, filename) => {
 		}
 	}
 
-	if (isCjs(filename)) {
+	if (isCjs(filename, source)) {
 		source = `import { __cjsLoad } from "qn:cjs"\n` +
 			`const { module: __cjs_module } = __cjsLoad(import.meta.filename, import.meta.dirname, function(exports, require, module, __filename, __dirname) {\n` +
 			source + `\n});\n` +
