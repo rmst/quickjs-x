@@ -413,63 +413,8 @@ assert.throws = function throws(fn, error, message) {
 		})
 	}
 
-	// If no error validator provided, just check that something was thrown
-	if (error === undefined) {
-		return
-	}
-
-	// RegExp: test against error message
-	if (error instanceof RegExp) {
-		if (!error.test(actual?.message)) {
-			throw new AssertionError({
-				message: message || `The error message "${actual?.message}" does not match ${error}`,
-				actual,
-				expected: error,
-				operator: 'throws'
-			})
-		}
-		return
-	}
-
-	// Function: check instanceof (Error constructor)
-	if (typeof error === 'function') {
-		if (!(actual instanceof error)) {
-			throw new AssertionError({
-				message: message || `The error is not an instance of ${error.name || 'expected constructor'}`,
-				actual,
-				expected: error,
-				operator: 'throws'
-			})
-		}
-		return
-	}
-
-	// Object: validate properties
-	if (typeof error === 'object' && error !== null) {
-		for (const key of Object.keys(error)) {
-			const expectedVal = error[key]
-			const actualVal = actual?.[key]
-
-			if (expectedVal instanceof RegExp) {
-				if (!expectedVal.test(actualVal)) {
-					throw new AssertionError({
-						message: message || `The error.${key} "${actualVal}" does not match ${expectedVal}`,
-						actual,
-						expected: error,
-						operator: 'throws'
-					})
-				}
-			} else if (!isDeepStrictEqual(actualVal, expectedVal)) {
-				throw new AssertionError({
-					message: message || `The error.${key} property does not match: expected ${formatValue(expectedVal)}, got ${formatValue(actualVal)}`,
-					actual,
-					expected: error,
-					operator: 'throws'
-				})
-			}
-		}
-		return
-	}
+	const mismatch = validateError(actual, error, message, 'throws')
+	if (mismatch) throw mismatch
 }
 
 /**
@@ -527,6 +472,169 @@ assert.doesNotThrow = function doesNotThrow(fn, error, message) {
 	}
 }
 
+// Validate a caught error against the same error spec shapes accepted by
+// assert.throws (RegExp, constructor, validation object). Returns null on
+// match, or an AssertionError describing the mismatch.
+function validateError(actual, error, message, operator) {
+	if (error === undefined) return null
+
+	if (error instanceof RegExp) {
+		if (!error.test(actual?.message)) {
+			return new AssertionError({
+				message: message || `The error message "${actual?.message}" does not match ${error}`,
+				actual,
+				expected: error,
+				operator,
+			})
+		}
+		return null
+	}
+
+	if (typeof error === 'function') {
+		if (!(actual instanceof error)) {
+			return new AssertionError({
+				message: message || `The error is not an instance of ${error.name || 'expected constructor'}`,
+				actual,
+				expected: error,
+				operator,
+			})
+		}
+		return null
+	}
+
+	if (typeof error === 'object' && error !== null) {
+		for (const key of Object.keys(error)) {
+			const expectedVal = error[key]
+			const actualVal = actual?.[key]
+
+			if (expectedVal instanceof RegExp) {
+				if (!expectedVal.test(actualVal)) {
+					return new AssertionError({
+						message: message || `The error.${key} "${actualVal}" does not match ${expectedVal}`,
+						actual,
+						expected: error,
+						operator,
+					})
+				}
+			} else if (!isDeepStrictEqual(actualVal, expectedVal)) {
+				return new AssertionError({
+					message: message || `The error.${key} property does not match: expected ${formatValue(expectedVal)}, got ${formatValue(actualVal)}`,
+					actual,
+					expected: error,
+					operator,
+				})
+			}
+		}
+		return null
+	}
+
+	return null
+}
+
+// Resolve the asyncFn argument to a promise. Accepts either a thenable directly
+// or a function that returns one when called.
+function asPromise(asyncFn, operator) {
+	if (asyncFn && typeof asyncFn.then === 'function') return asyncFn
+	if (typeof asyncFn === 'function') {
+		const result = asyncFn()
+		if (!result || typeof result.then !== 'function') {
+			throw new TypeError(
+				`The "asyncFn" argument must return a Promise. Got ${formatValue(result)}`,
+			)
+		}
+		return result
+	}
+	throw new TypeError('The "asyncFn" argument must be of type function or Promise')
+}
+
+/**
+ * Assert that an async function (or returned promise) rejects.
+ * @param {Function|Promise} asyncFn
+ * @param {RegExp|Function|Object|Error} [error]
+ * @param {string} [message]
+ */
+assert.rejects = async function rejects(asyncFn, error, message) {
+	if (typeof error === 'string') {
+		message = error
+		error = undefined
+	}
+
+	const promise = asPromise(asyncFn, 'rejects')
+
+	let rejected = false
+	let actual
+	try {
+		await promise
+	} catch (e) {
+		rejected = true
+		actual = e
+	}
+
+	if (!rejected) {
+		throw new AssertionError({
+			message: message || 'Missing expected rejection',
+			actual: undefined,
+			expected: error,
+			operator: 'rejects',
+		})
+	}
+
+	const mismatch = validateError(actual, error, message, 'rejects')
+	if (mismatch) throw mismatch
+}
+
+/**
+ * Assert that an async function (or returned promise) does not reject.
+ * @param {Function|Promise} asyncFn
+ * @param {RegExp|Function} [error]
+ * @param {string} [message]
+ */
+assert.doesNotReject = async function doesNotReject(asyncFn, error, message) {
+	if (typeof error === 'string') {
+		message = error
+		error = undefined
+	}
+
+	const promise = asPromise(asyncFn, 'doesNotReject')
+
+	let actual
+	try {
+		await promise
+		return
+	} catch (e) {
+		actual = e
+	}
+
+	if (error === undefined) {
+		throw new AssertionError({
+			message: message || `Got unwanted rejection: ${actual?.message || actual}`,
+			actual,
+			expected: undefined,
+			operator: 'doesNotReject',
+		})
+	}
+
+	if (error instanceof RegExp && error.test(actual?.message)) {
+		throw new AssertionError({
+			message: message || `Got unwanted rejection: ${actual?.message}`,
+			actual,
+			expected: error,
+			operator: 'doesNotReject',
+		})
+	}
+
+	if (typeof error === 'function' && actual instanceof error) {
+		throw new AssertionError({
+			message: message || `Got unwanted rejection: ${actual?.message || actual}`,
+			actual,
+			expected: error,
+			operator: 'doesNotReject',
+		})
+	}
+
+	throw actual
+}
+
 // Legacy loose-equality aliases — Node.js docs recommend the strict variants,
 // but many codebases (and Node's own test suite) still use these.
 assert.equal = assert.strictEqual
@@ -539,6 +647,6 @@ assert.AssertionError = AssertionError
 export default assert
 export { assert }
 
-const { ok, strictEqual, deepStrictEqual, notStrictEqual, notDeepStrictEqual, fail, match, doesNotMatch, throws, doesNotThrow } = assert
+const { ok, strictEqual, deepStrictEqual, notStrictEqual, notDeepStrictEqual, fail, match, doesNotMatch, throws, doesNotThrow, rejects, doesNotReject } = assert
 const equal = assert.equal, notEqual = assert.notEqual, deepEqual = assert.deepEqual
-export { ok, strictEqual, deepStrictEqual, notStrictEqual, notDeepStrictEqual, fail, match, doesNotMatch, throws, doesNotThrow, equal, notEqual, deepEqual }
+export { ok, strictEqual, deepStrictEqual, notStrictEqual, notDeepStrictEqual, fail, match, doesNotMatch, throws, doesNotThrow, rejects, doesNotReject, equal, notEqual, deepEqual }
