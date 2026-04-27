@@ -530,6 +530,133 @@ describe('qn install — sourceDependencies', () => {
 		}
 	})
 
+	test('path source: copies local dir contents (relative path)', async () => {
+		let dir = mktempdir()
+		try {
+			let siblingDir = join(dir, 'sibling')
+			mkdirSync(siblingDir)
+			writeFileSync(join(siblingDir, 'package.json'), JSON.stringify({ name: 'sibling-pkg' }))
+			writeFileSync(join(siblingDir, 'index.js'), 'export const v = 7\n')
+
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: {
+					'sibling-pkg': { path: '../sibling' },
+				},
+			}))
+
+			await install(projectDir)
+
+			let installed = readFileSync(join(projectDir, 'node_modules/sibling-pkg/index.js'), 'utf8')
+			assert.strictEqual(installed, 'export const v = 7\n')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('path source: picks up uncommitted edits (no git involved)', async () => {
+		let dir = mktempdir()
+		try {
+			let siblingDir = join(dir, 'sibling')
+			mkdirSync(siblingDir)
+			writeFileSync(join(siblingDir, 'package.json'), JSON.stringify({ name: 'live' }))
+			writeFileSync(join(siblingDir, 'a.js'), 'old\n')
+
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { live: { path: '../sibling' } },
+			}))
+
+			await install(projectDir)
+			assert.strictEqual(readFileSync(join(projectDir, 'node_modules/live/a.js'), 'utf8'), 'old\n')
+
+			writeFileSync(join(siblingDir, 'a.js'), 'new\n')
+			await install(projectDir)
+			assert.strictEqual(readFileSync(join(projectDir, 'node_modules/live/a.js'), 'utf8'), 'new\n')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('path source: applies exports override', async () => {
+		let dir = mktempdir()
+		try {
+			let siblingDir = join(dir, 'sibling')
+			mkdirSync(siblingDir)
+			writeFileSync(join(siblingDir, 'package.json'), JSON.stringify({
+				name: 'sib',
+				exports: { '.': './dist/index.mjs' },
+			}))
+
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: {
+					sib: { path: '../sibling', exports: { '.': './src/index.ts' } },
+				},
+			}))
+
+			await install(projectDir)
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/sib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.exports, { '.': './src/index.ts' })
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('path source: rejects combining path with git/rev', async () => {
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir, { recursive: true })
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: {
+					bad: { path: '/whatever', git: 'https://x', rev: '0'.repeat(40) },
+				},
+			}))
+			await expectRejection(() => install(projectDir), /cannot combine 'path' with/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('path source: rejects nonexistent path', async () => {
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir, { recursive: true })
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { miss: { path: './does-not-exist' } },
+			}))
+			await expectRejection(() => install(projectDir), /path not found/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('rejects entry with neither git+rev nor path', async () => {
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir, { recursive: true })
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { exports: {} } },
+			}))
+			await expectRejection(() => install(projectDir), /requires either 'git'\+'rev' or 'path'/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
 	const gitHttpBackend = findGitHttpBackend()
 	const remoteTest = gitHttpBackend ? test : (test.skip ?? (() => {}))
 

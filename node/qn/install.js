@@ -4,9 +4,10 @@
  * Reads package.json dependencies and installs them into node_modules/.
  * Supports: local paths (file:), git URLs (github:, git+https://).
  *
- * Also reads `sourceDependencies` (Cargo-style declarative git deps with
- * { git, rev, exports?, build? } per entry). See `installSourceDeps` for
- * the field shape and behavior.
+ * Also reads `sourceDependencies` — declarative entries pinned to a git
+ * commit ({ git, rev, ... }) or a local path ({ path, ... }), each with
+ * optional `exports` rewrite and `build` shell escape hatch. See
+ * `installSourceDeps` for the field shape and behavior.
  *
  * Missing features:
  * - npm registry fetching (npmjs.com)
@@ -189,40 +190,69 @@ function getCacheDir() {
 /**
  * Install entries from package.json's `sourceDependencies` field.
  *
- * Each entry pins a git source (Cargo-style):
+ * Two source variants:
  *
- *   "preact": {
- *     "git":     "https://github.com/preactjs/preact",  // required
- *     "rev":     "21dd6d04...",                          // required: 40-hex SHA
- *     "exports": { ".": "./src/index.js", ... },         // optional override
- *     "build":   "make all"                              // optional escape hatch
- *   }
+ *   Git-pinned (Cargo-style):
+ *     "preact": {
+ *       "git":     "https://github.com/preactjs/preact",  // required
+ *       "rev":     "21dd6d04...",                          // required: 40-hex SHA
+ *       "exports": { ".": "./src/index.js", ... },         // optional override
+ *       "build":   "make all"                              // optional escape hatch
+ *     }
+ *
+ *   Local path (for sibling packages and uncommitted-edit dev workflows):
+ *     "server-common": {
+ *       "path":    "../../web/server-common",              // required (relative to projectDir, or absolute)
+ *       "exports": { ... },                                 // optional override
+ *       "build":   "..."                                    // optional escape hatch
+ *     }
  *
  * Behavior per entry:
- *   1. Fetch the tree at `rev` via qn:git (full SHA-1 verification).
- *   2. Rewrite the cloned package.json's `exports` field:
+ *   1. Materialize source into node_modules/<name>:
+ *        - git+rev: fetchTree via qn:git (full SHA-1 verification);
+ *        - path:    cpSync from resolved local path (working-dir contents,
+ *                   uncommitted edits included).
+ *   2. Rewrite the resulting package.json's `exports` field:
  *        - if `exports` is given, use it verbatim;
  *        - else if the original exports has `./dist/X.{js,mjs}` paths, rewrite
  *          them to `./src/X.ts` (default tree-mirror convention);
  *        - else leave it alone.
- *   3. If `build` is given, run it as a shell command in the cloned dir.
+ *   3. If `build` is given, run it as a shell command in the materialized dir.
  *
- * Lifecycle scripts on the cloned package (prepare, etc.) are NOT run —
+ * Lifecycle scripts on the source package (prepare, etc.) are NOT run —
  * the spec is intended to be fully declarative.
  *
- * @param {Record<string, { git: string, rev: string, exports?: object, build?: string }>} sourceDeps
+ * @param {Record<string, { git?: string, rev?: string, path?: string, exports?: object, build?: string }>} sourceDeps
  * @param {string} nodeModulesDir
+ * @param {string} projectDir - used to resolve relative `path` entries
  */
-async function installSourceDeps(sourceDeps, nodeModulesDir) {
+async function installSourceDeps(sourceDeps, nodeModulesDir, projectDir) {
 	for (let [name, src] of Object.entries(sourceDeps)) {
 		if (!src || typeof src !== "object") {
 			throw new Error(`sourceDependencies["${name}"]: must be an object`)
 		}
-		if (!src.git || typeof src.git !== "string") {
-			throw new Error(`sourceDependencies["${name}"]: 'git' field is required`)
+
+		let isPath = src.path !== undefined
+		let isGit = src.git !== undefined || src.rev !== undefined
+
+		if (isPath && isGit) {
+			throw new Error(`sourceDependencies["${name}"]: cannot combine 'path' with 'git'/'rev'`)
 		}
-		if (!src.rev || typeof src.rev !== "string") {
-			throw new Error(`sourceDependencies["${name}"]: 'rev' field is required`)
+		if (!isPath && !isGit) {
+			throw new Error(`sourceDependencies["${name}"]: requires either 'git'+'rev' or 'path'`)
+		}
+		if (isGit) {
+			if (!src.git || typeof src.git !== "string") {
+				throw new Error(`sourceDependencies["${name}"]: 'git' field is required`)
+			}
+			if (!src.rev || typeof src.rev !== "string") {
+				throw new Error(`sourceDependencies["${name}"]: 'rev' field is required`)
+			}
+		}
+		if (isPath) {
+			if (typeof src.path !== "string") {
+				throw new Error(`sourceDependencies["${name}"]: 'path' must be a string`)
+			}
 		}
 
 		let dest = join(nodeModulesDir, name)
@@ -233,8 +263,17 @@ async function installSourceDeps(sourceDeps, nodeModulesDir) {
 		if (existsSync(dest)) rmSync(dest, { recursive: true, force: true })
 		mkdirSync(dest, { recursive: true })
 
-		console.log(`${name} <- ${src.git}#${src.rev}`)
-		await fetchTree({ source: src.git, ref: src.rev, dest })
+		if (isPath) {
+			let absPath = resolve(projectDir, src.path)
+			if (!existsSync(absPath)) {
+				throw new Error(`sourceDependencies["${name}"]: path not found: ${absPath}`)
+			}
+			console.log(`${name} <- ${src.path}`)
+			cpSync(absPath, dest, { recursive: true })
+		} else {
+			console.log(`${name} <- ${src.git}#${src.rev}`)
+			await fetchTree({ source: src.git, ref: src.rev, dest })
+		}
 
 		// Rewrite exports.
 		let pkgJsonPath = join(dest, "package.json")
@@ -343,7 +382,7 @@ export async function install(projectDir, options = {}) {
 		}
 
 		if (sourceNames.length > 0) {
-			await installSourceDeps(sourceDeps, nodeModulesDir)
+			await installSourceDeps(sourceDeps, nodeModulesDir, projectDir)
 		}
 	}
 
