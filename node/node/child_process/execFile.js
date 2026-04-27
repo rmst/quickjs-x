@@ -15,7 +15,7 @@ import { setTimeout as _setTimeout, clearTimeout as _clearTimeout } from 'qn_vm'
  * @param {string} [options.input] - A string to be passed as input to the command (closes stdin after).
  * @param {number} [options.timeout=0] - Timeout in milliseconds (0 means no timeout).
  * @param {string} [options.killSignal='SIGTERM'] - Signal to send when timeout expires.
- * @param {string} [options.encoding] - If 'utf8', callback receives strings; otherwise Uint8Array.
+ * @param {string} [options.encoding='utf8'] - 'utf8' (default) gives strings; 'buffer' or null gives Uint8Array.
  * @param {number} [options.maxBuffer=1048576] - Max bytes allowed on stdout or stderr. Child is killed if exceeded.
  * @param {AbortSignal} [options.signal] - AbortSignal to abort the child process.
  * @param {Function} [callback] - Called with (error, stdout, stderr) when process completes.
@@ -105,14 +105,16 @@ export function execFile(file, args, options, callback) {
 
 	// If callback provided, collect stream data and call on close
 	if (typeof callback === 'function') {
-		// Check encoding option
-		const encoding = options.encoding
-		if (encoding && encoding.toLowerCase().replace('-', '') !== 'utf8') {
+		// Check encoding option. Node's default is 'utf8' (callback receives strings).
+		// 'buffer' or null opt out to raw Uint8Array chunks.
+		const encoding = options.encoding === undefined ? 'utf8' : options.encoding
+		const isBuffer = encoding === null || encoding === 'buffer'
+		if (!isBuffer && encoding.toLowerCase().replace('-', '') !== 'utf8') {
 			throw new NodeCompatibilityError(
-				`execFile: encoding '${encoding}' is not supported, only 'utf8' is supported`
+				`execFile: encoding '${encoding}' is not supported, only 'utf8' and 'buffer' are supported`
 			)
 		}
-		const useUtf8 = encoding && encoding.toLowerCase().replace('-', '') === 'utf8'
+		const useUtf8 = !isBuffer
 
 		// maxBuffer: default 1 MiB, matching Node.js
 		const maxBuffer = options.maxBuffer ?? 1024 * 1024
