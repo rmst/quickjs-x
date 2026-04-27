@@ -217,15 +217,149 @@ describe('node:assert shim', () => {
 
 	test('named exports work', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
-			import { throws, notStrictEqual, notDeepStrictEqual, doesNotThrow } from 'node:assert'
+			import { throws, notStrictEqual, notDeepStrictEqual, doesNotThrow, rejects, doesNotReject } from 'node:assert'
 			throws(() => { throw new Error() })
 			notStrictEqual(1, 2)
 			notDeepStrictEqual({a: 1}, {a: 2})
 			doesNotThrow(() => {})
+			await rejects(async () => { throw new Error('x') })
+			await doesNotReject(async () => {})
 			console.log(JSON.stringify({ passed: true }))
 		`)
 
 		const output = $`${bin} ${dir}/test.js`
 		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('rejects passes when async fn rejects', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			await assert.rejects(async () => {
+				throw new Error('rejected')
+			})
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('rejects accepts a thenable directly (not a function)', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			await assert.rejects(Promise.reject(new Error('rejected')), /rejected/)
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('rejects fails when promise resolves', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let threw = false
+			try {
+				await assert.rejects(async () => { return 'ok' })
+			} catch (e) {
+				threw = e.name === 'AssertionError' && e.message.includes('Missing expected rejection')
+			}
+			console.log(JSON.stringify({ threw }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
+	test('rejects with RegExp validates error message', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			await assert.rejects(async () => {
+				throw new Error('detailed rejection message')
+			}, /rejection/)
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('rejects with RegExp fails on mismatch', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let threw = false
+			try {
+				await assert.rejects(async () => {
+					throw new Error('actual')
+				}, /expected/)
+			} catch (e) {
+				threw = e.name === 'AssertionError'
+			}
+			console.log(JSON.stringify({ threw }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
+	test('rejects with Error constructor validates instanceof', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			await assert.rejects(async () => {
+				throw new TypeError('wrong type')
+			}, TypeError)
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('rejects with object validates properties', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			await assert.rejects(async () => {
+				const err = new Error('boom')
+				err.code = 'ERR_X'
+				throw err
+			}, { code: 'ERR_X', message: /boom/ })
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('rejects throws TypeError when fn returns non-promise', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let threw = false
+			try {
+				await assert.rejects(() => 42)
+			} catch (e) {
+				threw = e instanceof TypeError
+			}
+			console.log(JSON.stringify({ threw }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
+	test('doesNotReject passes when promise resolves', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			await assert.doesNotReject(async () => { return 'ok' })
+			console.log(JSON.stringify({ passed: true }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { passed: true })
+	})
+
+	test('doesNotReject fails when promise rejects', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let threw = false
+			try {
+				await assert.doesNotReject(async () => { throw new Error('oops') })
+			} catch (e) {
+				threw = e.message.includes('unwanted rejection')
+			}
+			console.log(JSON.stringify({ threw }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true })
 	})
 })

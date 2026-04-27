@@ -316,7 +316,7 @@ Notes: `Readable`/`Writable` are fd-backed; `Transform`/`Duplex` are generic and
 | `throws` / `doesNotThrow` | ✅ | |
 | `match` / `doesNotMatch` | ✅ | |
 | `equal` / `notEqual` / `deepEqual` | ⚠️ | Aliased to strict variants (not loose) |
-| `rejects` / `doesNotReject` | ❌ | |
+| `rejects` / `doesNotReject` | ✅ | |
 | `CallTracker` | ❌ | |
 
 ### node:test
