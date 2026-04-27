@@ -32,4 +32,31 @@ describe('-e flag', () => {
 		const output = $`${QX()} -e ""`
 		assert.strictEqual(output, '')
 	})
+
+	test('qn -e supports top-level import', () => {
+		const output = $`${QN()} -e 'import { readFileSync } from "node:fs"; console.log(typeof readFileSync)'`
+		assert.strictEqual(output, 'function')
+	})
+
+	test('qn -e supports top-level await in module mode', () => {
+		const output = $`${QN()} -e 'import "node:fs"; await new Promise(r => setTimeout(r, 1)); console.log("done")'`
+		assert.strictEqual(output, 'done')
+	})
+
+	test('qn -e supports top-level export', () => {
+		const output = $`${QN()} -e 'export const x = 1; console.log("ok")'`
+		assert.strictEqual(output, 'ok')
+	})
+
+	test('qn -e dynamic import stays in script mode', () => {
+		// Confirms detection excludes import(...) — non-strict-mode this would
+		// behave differently if we erroneously switched to module.
+		const output = $`${QN()} -e 'import("node:os").then(o => console.log(typeof o.cpus))'`
+		assert.strictEqual(output, 'function')
+	})
+
+	test('qx -e supports top-level import', () => {
+		const output = $`${QX()} -e 'import { readFileSync } from "node:fs"; console.log(typeof readFileSync)'`
+		assert.strictEqual(output, 'function')
+	})
 })

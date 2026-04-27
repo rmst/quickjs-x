@@ -16,7 +16,7 @@ import "qn:init"
 import { resolve } from "node:path"
 import { globSync } from "node:fs"
 import { commit, buildTime } from "qn:version-info"
-import { isDirectory, resolveDirectoryEntry } from "./qn/bootstrap-utils.js"
+import { isDirectory, resolveDirectoryEntry, detectModule } from "./qn/bootstrap-utils.js"
 import { statSync, S_IFMT, S_IFREG } from "qn:uv-fs"
 
 /** Check if a pattern contains glob special characters */
@@ -221,7 +221,9 @@ if (scriptArgs[1] === 'install') {
 	// process.argv was already copied from scriptArgs at import time — update it too
 	globalThis.process.argv = [...scriptArgs]
 	try {
-		const result = std.evalScript(evalCode)
+		const result = detectModule(evalCode)
+			? __qn_evalModule(evalCode)
+			: std.evalScript(evalCode)
 		if (result && typeof result.then === 'function') await result
 	} catch (e) {
 		std.err.puts("Error: " + (e.message || e) + "\n")

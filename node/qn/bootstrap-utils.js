@@ -17,6 +17,26 @@ export function isDirectory(path) {
 }
 
 /**
+ * Detect whether a string of code should be evaluated as an ES module.
+ *
+ * Returns true if the code contains a top-level `import` or `export`
+ * statement (which would be a syntax error in script mode). Excludes
+ * dynamic `import(...)` and `import.meta` since those are valid in scripts.
+ *
+ * Heuristic only: comments are stripped naively and string contents are
+ * not parsed, so a string literal containing a newline followed by
+ * `import x from ...` could trigger a false positive. Acceptable for
+ * the `-e` use case.
+ */
+export function detectModule(code) {
+	const stripped = code
+		.replace(/\/\*[\s\S]*?\*\//g, ' ')
+		.replace(/\/\/[^\n]*/g, '')
+	return /(^|[\n;])\s*import\s+["'a-zA-Z_$*{]/.test(stripped) ||
+		/(^|[\n;])\s*export\b/.test(stripped)
+}
+
+/**
  * Resolve a directory to its entry point file.
  * Matches Node.js behavior:
  * 1. If directory contains package.json with "main" field, use that

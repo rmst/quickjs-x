@@ -102,4 +102,12 @@ char *qn_apply_module_resolver_fallback(JSContext *ctx, const char *specifier,
 JSValue js_qn_set_module_resolver_fallback(JSContext *ctx, JSValueConst this_val,
                                              int argc, JSValueConst *argv);
 
+/*
+ * Evaluate a string as an ES module. Returns the module's evaluation
+ * promise (resolves after top-level await completes).
+ * JS-callable: globalThis.__qn_evalModule(code)
+ */
+JSValue js_qn_eval_module(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv);
+
 #endif /* QN_VM_H */

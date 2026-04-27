@@ -16,7 +16,7 @@ import process from "node:process"
 import { Buffer } from "node:buffer"
 import $, { ProcessPromise, ProcessOutput, retry } from "qx/core"
 import { commit, buildTime } from "qn:version-info"
-import { isDirectory, resolveDirectoryEntry } from "../node/qn/bootstrap-utils.js"
+import { isDirectory, resolveDirectoryEntry, detectModule } from "../node/qn/bootstrap-utils.js"
 
 // Handle --version flag
 if (scriptArgs[1] === '--version' || scriptArgs[1] === '-V') {
@@ -68,16 +68,19 @@ globalThis.within = async (fn) => {
 // Argv parsing (like zx's argv, uses node:process)
 globalThis.argv = process.argv.slice(2)
 
-// Handle -e flag (evaluate string as script)
+// Handle -e flag (evaluate string as script or module)
 if (scriptArgs[1] === '-e' || scriptArgs[1] === '--eval') {
 	if (scriptArgs.length < 3) {
 		std.err.puts('Error: -e requires an argument\n')
 		std.exit(1)
 	}
 	try {
-		std.evalScript(scriptArgs[2])
+		const result = detectModule(scriptArgs[2])
+			? __qn_evalModule(scriptArgs[2])
+			: std.evalScript(scriptArgs[2])
+		if (result && typeof result.then === 'function') await result
 	} catch (e) {
-		std.err.puts("Error: " + e.message + "\n")
+		std.err.puts("Error: " + (e.message || e) + "\n")
 		if (e.stack) std.err.puts(e.stack + "\n")
 		std.exit(1)
 	}

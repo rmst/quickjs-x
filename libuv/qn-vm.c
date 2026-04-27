@@ -152,6 +152,33 @@ JSValue js_qn_set_module_resolver_fallback(JSContext *ctx, JSValueConst this_val
 	return JS_UNDEFINED;
 }
 
+/* --------------------------------------------------------------------------
+ * evalModule: evaluate a string as an ES module
+ *
+ * Compiles and runs the source as JS_EVAL_TYPE_MODULE, sets import.meta,
+ * and returns the resulting promise (which resolves once the module is
+ * fully evaluated, including any top-level await).
+ *
+ * Exposed as globalThis.__qn_evalModule(code) so that `qn -e` and `qx -e`
+ * can support top-level import/export without patching quickjs-libc.c.
+ * -------------------------------------------------------------------------- */
+JSValue js_qn_eval_module(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv) {
+	if (argc < 1)
+		return JS_ThrowTypeError(ctx, "evalModule: missing code argument");
+	size_t len;
+	const char *str = JS_ToCStringLen(ctx, &len, argv[0]);
+	if (!str)
+		return JS_EXCEPTION;
+	JSValue obj = JS_Eval(ctx, str, len, "<evalModule>",
+	                      JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+	JS_FreeCString(ctx, str);
+	if (JS_IsException(obj))
+		return obj;
+	js_module_set_import_meta(ctx, obj, FALSE, TRUE);
+	return JS_EvalFunction(ctx, obj);
+}
+
 #include <string.h>
 #if !defined(_WIN32)
 #include <termios.h>

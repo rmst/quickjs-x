@@ -793,14 +793,16 @@ function generateCFile(entries, importMap, initModules, embeddedNames,
 		out += `  JS_SetModuleLoaderFunc2(rt, qn_module_normalizer, qn_loader, js_module_check_attributes, &qn_resolver_ctx);\n`
 	out += "}\n\n"
 
-	// Bind the __qn_set* C functions on globalThis so JS code (notably qn:init)
-	// can register a source transform and a module resolver fallback.
+	// Bind the __qn_* C functions on globalThis so JS code (notably qn:init
+	// and the bootstrap's -e handler) can register hooks and evaluate modules.
 	out += `static void qn_install_qn_bindings(JSContext *ctx) {
   JSValue g = JS_GetGlobalObject(ctx);
   JS_SetPropertyStr(ctx, g, "__qn_setSourceTransform",
     JS_NewCFunction(ctx, js_qn_set_source_transform, "__qn_setSourceTransform", 1));
   JS_SetPropertyStr(ctx, g, "__qn_setModuleResolverFallback",
     JS_NewCFunction(ctx, js_qn_set_module_resolver_fallback, "__qn_setModuleResolverFallback", 1));
+  JS_SetPropertyStr(ctx, g, "__qn_evalModule",
+    JS_NewCFunction(ctx, js_qn_eval_module, "__qn_evalModule", 1));
   JS_FreeValue(ctx, g);
 }\n\n`
 
