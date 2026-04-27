@@ -427,6 +427,135 @@ describe('qn bundle', () => {
 			rmSync(dir, { recursive: true })
 		}
 	})
+
+	test('alias rewrites a bare specifier before resolution', async () => {
+		const dir = mktempdir()
+		try {
+			const realPkg = join(dir, 'node_modules', 'realpkg')
+			mkdirSync(realPkg, { recursive: true })
+			writeFileSync(join(realPkg, 'package.json'), JSON.stringify({ name: 'realpkg', main: 'index.js' }))
+			writeFileSync(join(realPkg, 'index.js'), 'export const v = "REAL"\n')
+			writeFileSync(join(dir, 'main.js'), 'import { v } from "fakepkg"\nconsole.log(v)\n')
+			await build({
+				entrypoints: [join(dir, 'main.js')],
+				outdir: join(dir, 'dist'),
+				alias: { fakepkg: 'realpkg' },
+			})
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'REAL')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('alias maps onto an external', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'), 'import { v } from "react"\nconsole.log(v)\n')
+			await build({
+				entrypoints: [join(dir, 'main.js')],
+				outdir: join(dir, 'dist'),
+				alias: { react: 'preact-compat' },
+				external: ['preact-compat'],
+			})
+			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
+			assert.match(bundle, /require\(['"]preact-compat['"]\)/)
+			assert.doesNotMatch(bundle, /require\(['"]react['"]\)/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('--define replaces a dotted identifier path', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'),
+				'const mode = process.env.NODE_ENV\nconsole.log(mode)\n')
+			await build({
+				entrypoints: [join(dir, 'main.js')],
+				outdir: join(dir, 'dist'),
+				define: { 'process.env.NODE_ENV': '"production"' },
+			})
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'production')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('--define replaces a single identifier reference', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'),
+				'console.log(__DEV__ ? "dev" : "prod")\n')
+			await build({
+				entrypoints: [join(dir, 'main.js')],
+				outdir: join(dir, 'dist'),
+				define: { '__DEV__': 'false' },
+			})
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'prod')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('--define does not match property accesses or declarations', async () => {
+		const dir = mktempdir()
+		try {
+			// `obj.process` is a property access (different `process`).
+			// `function process() {}` is a declaration.
+			// `"process.env.NODE_ENV"` inside a string must not be replaced.
+			writeFileSync(join(dir, 'main.js'),
+				'const obj = { process: { env: { NODE_ENV: "kept" } } }\n' +
+				'function process() { return "fn" }\n' +
+				'const s = "process.env.NODE_ENV"\n' +
+				'console.log(obj.process.env.NODE_ENV, process(), s)\n')
+			await build({
+				entrypoints: [join(dir, 'main.js')],
+				outdir: join(dir, 'dist'),
+				define: { 'process.env.NODE_ENV': '"REPLACED"' },
+			})
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'kept fn process.env.NODE_ENV')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('--define longer paths win over shorter overlapping keys', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'),
+				'console.log(typeof process, process.env.NODE_ENV)\n')
+			await build({
+				entrypoints: [join(dir, 'main.js')],
+				outdir: join(dir, 'dist'),
+				define: {
+					'process': '({env: {NODE_ENV: "fallback"}})',
+					'process.env.NODE_ENV': '"production"',
+				},
+			})
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'object production')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('--define rejects invalid keys', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'), 'console.log(1)\n')
+			let err
+			try {
+				await build({
+					entrypoints: [join(dir, 'main.js')],
+					outdir: join(dir, 'dist'),
+					define: { '1bad': '2' },
+				})
+			} catch (e) { err = e }
+			assert.ok(err, 'expected build to throw')
+			assert.match(err.message, /invalid --define key/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
 })
 
 describe('traceModuleGraph', () => {

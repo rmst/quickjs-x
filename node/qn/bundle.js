@@ -24,8 +24,12 @@ const TARGETS = ["browser", "node"]
 // Sucrase token type constants we care about (from
 // vendor/sucrase-js/sucrase/src/parser/tokenizer/types.js). Hard-coded rather
 // than imported to keep the bundler's dependency surface narrow.
-const TT = { eof: 6144, string: 4608, name: 5632, parenL: 13824, parenR: 14336, semi: 16384, _export: 89104, _import: 90640 }
+const TT = { eof: 6144, string: 4608, name: 5632, parenL: 13824, parenR: 14336, semi: 16384, dot: 19456, _export: 89104, _import: 90640 }
 const CK_FROM = 13 // ContextualKeyword._from
+// IdentifierRole.Access — used for read-references; declarations and import/
+// export specifier names use other values, which we deliberately skip when
+// applying --define.
+const IR_ACCESS = 0
 
 const IMPORT_META_RE = /\bimport\.meta\.(url|dirname|filename)\b/g
 
@@ -277,20 +281,71 @@ function extractImports(code, ext) {
 	return out
 }
 
-// Replace each import's source range with `replacements.get(idx)`, preserving
-// everything else verbatim. Input list must be in source order.
-function applyRewrites(code, imports, replacements) {
+// Replace each {start, end, text} range in `code`, preserving everything else
+// verbatim. Ranges may be unordered; overlapping ranges are an error.
+function applyRanges(code, ranges) {
+	if (ranges.length === 0) return code
+	const sorted = ranges.slice().sort((a, b) => a.start - b.start)
 	const chunks = []
 	let cursor = 0
-	for (let i = 0; i < imports.length; i++) {
-		const imp = imports[i]
-		const repl = replacements.get(i)
-		if (repl === undefined) continue
-		chunks.push(code.slice(cursor, imp.start), repl)
-		cursor = imp.end
+	for (const r of sorted) {
+		if (r.start < cursor) throw new Error(`overlapping rewrite at ${r.start} (prev cursor ${cursor})`)
+		chunks.push(code.slice(cursor, r.start), r.text)
+		cursor = r.end
 	}
 	chunks.push(code.slice(cursor))
 	return chunks.join("")
+}
+
+// Parse `--define` keys into segment arrays, e.g. "process.env.NODE_ENV" →
+// ["process", "env", "NODE_ENV"]. Single-identifier keys produce a 1-element
+// array. Returns a list paired with the replacement text.
+function compileDefines(define) {
+	const out = []
+	for (const [key, text] of Object.entries(define || {})) {
+		const segments = key.split(".")
+		if (segments.length === 0 || segments.some(s => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s))) {
+			throw new Error(`bundle: invalid --define key ${JSON.stringify(key)} (must be an identifier or dotted identifier path)`)
+		}
+		out.push({ segments, text })
+	}
+	// Match longer paths first so e.g. `process.env.NODE_ENV` wins over `process`.
+	out.sort((a, b) => b.segments.length - a.segments.length)
+	return out
+}
+
+// Find positions in `code` where each compiled define key matches a real
+// identifier reference (not a property access continuation, not a declaration,
+// not an import/export specifier name). Returns {start, end, text} ranges
+// suitable for applyRanges.
+function extractDefineMatches(code, ext, defines) {
+	if (defines.length === 0) return []
+	const isJSX = ext === ".jsx" || ext === ".tsx"
+	const isTS = ext === ".ts" || ext === ".tsx"
+	const tokens = parse(code, isJSX, isTS, false).tokens
+	const out = []
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i]
+		if (t.type !== TT.name || t.identifierRole !== IR_ACCESS) continue
+		const head = code.slice(t.start, t.end)
+		for (const def of defines) {
+			if (def.segments[0] !== head) continue
+			let endIdx = i
+			let ok = true
+			for (let s = 1; s < def.segments.length; s++) {
+				const dotTok = tokens[endIdx + 1]
+				const nameTok = tokens[endIdx + 2]
+				if (!dotTok || dotTok.type !== TT.dot || !nameTok || nameTok.type !== TT.name) { ok = false; break }
+				if (code.slice(nameTok.start, nameTok.end) !== def.segments[s]) { ok = false; break }
+				endIdx += 2
+			}
+			if (!ok) continue
+			out.push({ start: t.start, end: tokens[endIdx].end, text: def.text })
+			i = endIdx
+			break
+		}
+	}
+	return out
 }
 
 /* ------------------------------------------------------------------ *
@@ -372,6 +427,8 @@ function bundleEntry(entry, opts) {
 	const ids = new Map()
 	const modules = new Map()
 	const declaredExternals = new Set(opts.external)
+	const aliasMap = new Map(Object.entries(opts.alias || {}))
+	const compiledDefines = compileDefines(opts.define)
 	const usedExternals = new Set()
 	const warnings = []
 	let counter = 0
@@ -401,17 +458,25 @@ function bundleEntry(entry, opts) {
 		const { kind, source, ext, imports } = loadAndAnalyse(filePath)
 		const fromDir = dirname(filePath)
 
-		// Decide a rewrite for each import.
-		const replacements = new Map()
-		for (let i = 0; i < imports.length; i++) {
-			const imp = imports[i]
-			const depId = resolveDep(imp.specifier, filePath, fromDir)
-			if (depId === null) continue
-			if (imp.kind === "static") {
-				replacements.set(i, JSON.stringify(depId))
-			} else {
-				replacements.set(i, `Promise.resolve(require(${JSON.stringify(depId)}))`)
-			}
+		// Build a flat list of source-range rewrites: import specifiers + any
+		// `--define` matches in the same file.
+		const ranges = []
+		for (const imp of imports) {
+			const dep = resolveDep(imp.specifier, filePath, fromDir)
+			if (dep === null) continue
+			// External whose resolved spec equals the source spec: leave alone
+			// so Sucrase emits `require("<spec>")` which falls through to
+			// __qn_externals at runtime. Aliased externals fall through here
+			// because dep.spec !== imp.specifier.
+			if (dep.kind === "external" && dep.spec === imp.specifier) continue
+			const newSpec = dep.kind === "internal" ? dep.id : dep.spec
+			const text = imp.kind === "static"
+				? JSON.stringify(newSpec)
+				: `Promise.resolve(require(${JSON.stringify(newSpec)}))`
+			ranges.push({ start: imp.start, end: imp.end, text })
+		}
+		if (kind !== "json" && compiledDefines.length > 0) {
+			for (const m of extractDefineMatches(source, ext, compiledDefines)) ranges.push(m)
 		}
 
 		// Pre-rewrite source specifiers to our module ids.
@@ -419,9 +484,9 @@ function bundleEntry(entry, opts) {
 		if (kind === "json") {
 			rewritten = `module.exports = ${source};`
 		} else if (kind === "cjs") {
-			rewritten = source
+			rewritten = applyRanges(source, ranges)
 		} else {
-			const preRewritten = applyRewrites(source, imports, replacements)
+			const preRewritten = applyRanges(source, ranges)
 			// Per-file `@jsxImportSource` pragma overrides the bundle default.
 			const pragmaSource = (ext === ".tsx" || ext === ".jsx") ? detectJsxImportSource(source) : null
 			const fileJsxImportSource = pragmaSource || opts.jsxImportSource
@@ -432,10 +497,13 @@ function bundleEntry(entry, opts) {
 			// separately and patch the emitted require() call.
 			const runtime = jsxRuntimeSpec(ext, fileJsxImportSource)
 			if (runtime && rewritten.includes(runtime)) {
-				const depId = resolveDep(runtime, filePath, fromDir)
-				if (depId !== null) {
-					const pat = new RegExp(`require\\((['"])${runtime.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\1\\)`, "g")
-					rewritten = rewritten.replace(pat, `require(${JSON.stringify(depId)})`)
+				const dep = resolveDep(runtime, filePath, fromDir)
+				if (dep !== null) {
+					const target = dep.kind === "internal" ? dep.id : dep.spec
+					if (target !== runtime) {
+						const pat = new RegExp(`require\\((['"])${runtime.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\1\\)`, "g")
+						rewritten = rewritten.replace(pat, `require(${JSON.stringify(target)})`)
+					}
 				}
 			}
 
@@ -448,16 +516,21 @@ function bundleEntry(entry, opts) {
 
 	return { entryId: ids.get(entryAbs), modules, warnings, externals: usedExternals }
 
-	// Returns a bundled module id, or null for externals / unresolved specs.
+	// Returns null for unresolved specs, {kind: "internal", id} for bundled
+	// modules, or {kind: "external", spec} for externals. The spec returned for
+	// externals is post-alias, which lets the caller distinguish aliased
+	// externals (where the source spec must be rewritten) from plain externals
+	// (where the source can be left alone).
 	function resolveDep(spec, filePath, fromDir) {
+		if (aliasMap.has(spec)) spec = aliasMap.get(spec)
 		if (declaredExternals.has(spec)) {
 			usedExternals.add(spec)
-			return null
+			return { kind: "external", spec }
 		}
 		if (spec.startsWith("node:")) {
 			if (opts.target === "node") {
 				usedExternals.add(spec)
-				return null
+				return { kind: "external", spec }
 			}
 			throw new Error(
 				`cannot bundle "${spec}" (from ${filePath}): node builtins are not available ` +
@@ -470,7 +543,7 @@ function bundleEntry(entry, opts) {
 		}
 		const depId = assignId(resolved)
 		if (!modules.has(depId)) stack.push(resolved)
-		return depId
+		return { kind: "internal", id: depId }
 	}
 }
 
@@ -579,6 +652,8 @@ export async function build(options) {
 	const opts = {
 		target,
 		external: options.external || [],
+		alias: options.alias || {},
+		define: options.define || {},
 		jsxRuntime: options.jsxRuntime || "automatic",
 		jsxImportSource: options.jsxImportSource || "react",
 		production,
@@ -627,6 +702,8 @@ Options:
   --format esm|iife         Output format (default: esm)
   --target browser|node     Resolution conditions (default: browser)
   --external PKG            Leave PKG unresolved (repeatable)
+  --alias FROM=TO           Rewrite specifier FROM to TO before resolution (repeatable)
+  --define KEY=VALUE        Replace identifier path KEY with literal expression VALUE (repeatable)
   --jsx-import-source SRC   Import source for JSX runtime (default: react)
   --development             Use development mode (conditions + jsx-dev-runtime)
   --help, -h                Show this help
@@ -640,6 +717,8 @@ export async function cli(args) {
 	let jsxImportSource = "react"
 	let production = true
 	const external = []
+	const alias = {}
+	const define = {}
 
 	const valueOf = (i, name) => {
 		const arg = args[i]
@@ -652,6 +731,15 @@ export async function cli(args) {
 		return { value: args[i + 1], next: i + 2 }
 	}
 
+	const splitKV = (raw, flag) => {
+		const eq = raw.indexOf("=")
+		if (eq < 0) {
+			console.error(`${flag} expects FROM=TO, got ${JSON.stringify(raw)}`)
+			process.exit(1)
+		}
+		return [raw.slice(0, eq), raw.slice(eq + 1)]
+	}
+
 	for (let i = 0; i < args.length;) {
 		const arg = args[i]
 		if (arg === "--help" || arg === "-h") { console.log(HELP); return }
@@ -661,6 +749,8 @@ export async function cli(args) {
 		else if (name === "--format") { const { value, next } = valueOf(i, name); format = value; i = next }
 		else if (name === "--target") { const { value, next } = valueOf(i, name); target = value; i = next }
 		else if (name === "--external") { const { value, next } = valueOf(i, name); external.push(value); i = next }
+		else if (name === "--alias") { const { value, next } = valueOf(i, name); const [k, v] = splitKV(value, "--alias"); alias[k] = v; i = next }
+		else if (name === "--define") { const { value, next } = valueOf(i, name); const [k, v] = splitKV(value, "--define"); define[k] = v; i = next }
 		else if (name === "--jsx-import-source") { const { value, next } = valueOf(i, name); jsxImportSource = value; i = next }
 		else if (arg.startsWith("-")) { console.error(`Unknown option: ${arg}`); process.exit(1) }
 		else { entrypoints.push(arg); i++ }
@@ -674,7 +764,7 @@ export async function cli(args) {
 
 	let result
 	try {
-		result = await build({ entrypoints, outdir, format, target, external, jsxImportSource, production })
+		result = await build({ entrypoints, outdir, format, target, external, alias, define, jsxImportSource, production })
 	} catch (e) {
 		console.error(`qn build: ${e.message}`)
 		process.exit(1)
