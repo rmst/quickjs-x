@@ -297,6 +297,47 @@ describe('node:child_process shim', () => {
 		assert.ok(result.output.endsWith('/subdir'))
 	})
 
+	// Node throws synchronously for some spawn errors (e.g. ENOTDIR cwd,
+	// validated before fork) and delivers others via callback (e.g. ENOENT,
+	// detected after fork). qn surfaces both via callback. The regression we
+	// guard against is execFile silently producing
+	// "cannot read property 'setEncoding' of null" — either delivery shape
+	// is fine as long as the underlying ENOTDIR/ENOENT error reaches user code.
+	test('execFile promisified surfaces ENOTDIR when cwd is a regular file', ({ bin, dir }) => {
+		writeFileSync(`${dir}/notadir`, 'just a file')
+		writeFileSync(`${dir}/test.js`, `
+			import { execFile } from 'node:child_process'
+			import { promisify } from 'node:util'
+			const execFileAsync = promisify(execFile)
+			try {
+				await execFileAsync('echo', ['hi'], { cwd: '${dir}/notadir' })
+				console.log(JSON.stringify({ rejected: false }))
+			} catch (err) {
+				console.log(JSON.stringify({ rejected: true, code: err.code }))
+			}
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { rejected: true, code: 'ENOTDIR' })
+	})
+
+	test('execFile promisified surfaces ENOENT when executable is missing', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { execFile } from 'node:child_process'
+			import { promisify } from 'node:util'
+			const execFileAsync = promisify(execFile)
+			try {
+				await execFileAsync('${dir}/does-not-exist', [])
+				console.log(JSON.stringify({ rejected: false }))
+			} catch (err) {
+				console.log(JSON.stringify({ rejected: true, code: err.code }))
+			}
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { rejected: true, code: 'ENOENT' })
+	})
+
 	test('execFile with timeout that expires', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { execFile } from 'node:child_process'

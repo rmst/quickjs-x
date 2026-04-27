@@ -1,6 +1,6 @@
 import * as std from 'std'
 import { spawn as _uvSpawn } from 'qn/uv-process'
-import { pipeNew } from 'qn/uv-stream'
+import { pipeNew, close as _streamClose } from 'qn/uv-stream'
 import { ChildProcess } from './ChildProcess.js'
 import { parseStdio, checkUnsupportedOptions } from './utils.js'
 
@@ -102,6 +102,12 @@ export function spawn(command, args, options) {
 			detached,
 		})
 	} catch (err) {
+		// libuv's uv_spawn opens parent-side stdio pipes even on exec failure
+		// (see vendor/libuv/src/unix/process.c), so close them here to release
+		// the FDs and let the QNStream wrappers be GC'd.
+		if (stdinHandle) _streamClose(stdinHandle)
+		if (stdoutHandle) _streamClose(stdoutHandle)
+		if (stderrHandle) _streamClose(stderrHandle)
 		// Emit error asynchronously like Node.js does
 		const child = new ChildProcess(null, {
 			stdinHandle: null,

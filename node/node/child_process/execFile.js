@@ -75,6 +75,20 @@ export function execFile(file, args, options, callback) {
 		detached: options.detached,
 	})
 
+	// Synchronous spawn failure (e.g. ENOTDIR on cwd, ENOENT on missing
+	// executable): spawn() returned a ChildProcess with null streams and a
+	// queued 'error' event. Forward the error to the callback and skip stream
+	// wiring — matching Node's execFile semantics where the spawn error is
+	// delivered via the callback rather than as a sync throw.
+	if (child.pid === undefined) {
+		if (typeof callback === 'function') {
+			const isBuffer = options.encoding === null || options.encoding === 'buffer'
+			const empty = isBuffer ? Buffer.alloc(0) : ''
+			child.once('error', (err) => callback(err, empty, empty))
+		}
+		return child
+	}
+
 	// Set up timeout if specified
 	let timeoutId = null
 	let timedOut = false

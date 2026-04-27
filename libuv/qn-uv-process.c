@@ -656,6 +656,9 @@ static JSValue js_uv_process_op(JSContext *ctx, JSValueConst this_val,
 		spawn_args_free(ctx, &sa);
 
 		if (r < 0) {
+			/* Unlink before free — process_head still points at proc, and
+			 * qn_process_cleanup walks that list at shutdown. */
+			process_unlink(proc);
 			free(proc);
 			return qn_throw_errno(ctx, r);
 		}
