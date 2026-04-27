@@ -11,6 +11,7 @@
 
 import * as std from "std"
 import { dirname, join, extname } from "node:path"
+import { detectModule } from "./bootstrap-utils.js"
 
 const EMBEDDED_PREFIX = "embedded://"
 
@@ -57,20 +58,22 @@ function readNearestPackageJson(dir) {
  * Check if a file path should be treated as CJS.
  * - .cjs → always CJS
  * - .mjs → never CJS
- * - .js → CJS only if nearest package.json has "type": "commonjs"
- *
- * This is conservative: .js files default to ESM everywhere (including
- * node_modules). CJS packages must use .cjs extension or explicitly set
- * "type": "commonjs" in their package.json. This matches modern npm
- * conventions where CJS packages explicitly declare their type.
+ * - .js with package.json "type": "commonjs" → CJS
+ * - .js with package.json "type": "module" → ESM
+ * - .js with no/missing type field → sniff source: top-level import/export
+ *   means ESM, otherwise CJS. Matches Node's --experimental-detect-module
+ *   (default-on since Node 22.7).
  */
-export function isCjs(filename) {
+export function isCjs(filename, source) {
 	const ext = extname(filename)
 	if (ext === ".cjs") return true
 	if (ext === ".mjs") return false
 	if (ext === ".js") {
 		const pkg = readNearestPackageJson(dirname(filename))
-		return pkg?.type === "commonjs"
+		if (pkg?.type === "commonjs") return true
+		if (pkg?.type === "module") return false
+		if (source === undefined) return false
+		return !detectModule(source)
 	}
 	return false
 }

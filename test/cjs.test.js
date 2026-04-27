@@ -66,13 +66,35 @@ describe('CommonJS import support', () => {
 			assert.strictEqual($`${bin} ${dir}/main.js`, '42')
 		})
 
-		testQnOnly('.js files without type field stay ESM', ({ bin, dir }) => {
+		testQnOnly('.js files without type field detected as ESM by content', ({ bin, dir }) => {
 			writeFileSync(join(dir, 'lib.js'), `export const msg = "esm"`)
 			writeFileSync(join(dir, 'main.js'), `
 				import { msg } from "./lib.js"
 				console.log(msg)
 			`)
 			assert.strictEqual($`${bin} ${dir}/main.js`, 'esm')
+		})
+
+		testQnOnly('.js files without type field detected as CJS by content', ({ bin, dir }) => {
+			// piexifjs-style: CJS .js file with no package.json type field.
+			// Should auto-detect as CJS (matches Node 22.7+ behavior).
+			writeFileSync(join(dir, 'lib.js'), `module.exports = { hello: "world" }`)
+			writeFileSync(join(dir, 'main.js'), `
+				import lib from "./lib.js"
+				console.log(lib.hello)
+			`)
+			assert.strictEqual($`${bin} ${dir}/main.js`, 'world')
+		})
+
+		testQnOnly('.js with type: module stays ESM regardless of content', ({ bin, dir }) => {
+			mkdirSync(join(dir, 'esmpkg'))
+			writeFileSync(join(dir, 'esmpkg', 'package.json'), '{"type": "module"}')
+			writeFileSync(join(dir, 'esmpkg', 'lib.js'), `export const n = 7`)
+			writeFileSync(join(dir, 'main.js'), `
+				import { n } from "./esmpkg/lib.js"
+				console.log(n)
+			`)
+			assert.strictEqual($`${bin} ${dir}/main.js`, '7')
 		})
 	})
 

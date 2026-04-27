@@ -19,21 +19,36 @@ export function isDirectory(path) {
 /**
  * Detect whether a string of code should be evaluated as an ES module.
  *
- * Returns true if the code contains a top-level `import` or `export`
- * statement (which would be a syntax error in script mode). Excludes
- * dynamic `import(...)` and `import.meta` since those are valid in scripts.
+ * Returns true if the code contains an unambiguous ESM marker. Used both
+ * for `-e` evaluation and (via isCjs) for .js files that lack a package.json
+ * "type" field — matches Node's --experimental-detect-module behavior.
  *
- * Heuristic only: comments are stripped naively and string contents are
- * not parsed, so a string literal containing a newline followed by
- * `import x from ...` could trigger a false positive. Acceptable for
- * the `-e` use case.
+ * Markers checked, in order:
+ *   1. Hard ESM: top-level `import`/`export`, `import.meta`
+ *   2. Hard CJS: `module.exports`, `exports.x =`, `require(...)` — short-circuits
+ *      so files with these are never classified ESM, even if a stray TLA-like
+ *      pattern appears inside an async function.
+ *   3. Soft ESM: top-level `await` / `for await`, anchored at column 0 to avoid
+ *      matching indented `await` inside a function body.
+ *
+ * Heuristic only: comments are stripped naively and string contents are not
+ * parsed. Acceptable for the use cases — pathological code with the keywords
+ * inside template literals could mis-classify.
  */
 export function detectModule(code) {
 	const stripped = code
 		.replace(/\/\*[\s\S]*?\*\//g, ' ')
 		.replace(/\/\/[^\n]*/g, '')
-	return /(^|[\n;])\s*import\s+["'a-zA-Z_$*{]/.test(stripped) ||
-		/(^|[\n;])\s*export\b/.test(stripped)
+	if (/(^|[\n;])\s*import\s+["'a-zA-Z_$*{]/.test(stripped)) return true
+	if (/(^|[\n;])\s*export\b/.test(stripped)) return true
+	if (/\bimport\.meta\b/.test(stripped)) return true
+	if (/\bmodule\.exports\b/.test(stripped)) return false
+	if (/(^|[\n;{])\s*exports\.[\w$]+\s*=/.test(stripped)) return false
+	if (/(^|[\n;{(=,!&|?:[])\s*require\s*\(/.test(stripped)) return false
+	if (/\b(?:__filename|__dirname)\b/.test(stripped)) return false
+	if (/(^|\n)[ \t]*(?:(?:const|let|var)\b[^=\n]*=[ \t]*)?await\s/.test(stripped)) return true
+	if (/(^|\n)[ \t]*for\s+await\b/.test(stripped)) return true
+	return false
 }
 
 /**
