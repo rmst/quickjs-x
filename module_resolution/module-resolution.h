@@ -763,7 +763,7 @@ static char *resolve_package_json(JSContext *ctx, const char *pkg_dir, const cha
             }
             JS_FreeValue(ctx, entry);
 
-            /* No direct match: try wildcard subpath patterns like "./utils/*" */
+            // No direct match: try wildcard subpath patterns like "./utils/*"
             if (!result && strcmp(subpath, ".") != 0) {
                 result = resolve_wildcard_export(ctx, exports_val, subpath_key, pkg_dir);
             }
