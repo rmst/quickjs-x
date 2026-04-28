@@ -9,12 +9,18 @@
  *
  * Public API:
  *   - openLocal(gitDir) -> Repo
- *   - resolve(repo, ref) -> sha
+ *   - resolve(repo, ref) -> sha   (literal pointee — does not peel tags)
  *   - readObject(repo, sha) -> { type, content }   (verifies hash)
  *   - readTree(repo, sha) -> [{ mode, name, sha }]
- *   - readCommit(repo, sha) -> { tree, parents, ... }
+ *   - readCommit(repo, sha) -> { tree, parents, ... }   (peels through tag objects)
+ *   - peel(repo, sha) -> { sha, type, content }   (follows tag → ... → non-tag)
  *   - checkout(repo, treeSha, destDir) -> number (files written)
  *   - fetchTree({ source, ref, dest }) -> { commit, tree, files }
+ *
+ * Tag handling: an annotated tag is a tag *object* whose SHA is not the underlying
+ * commit's SHA. `readCommit` and `fetchTree` peel through tag objects transparently;
+ * each hop is hash-verified by readObject and the tag's `type` header is checked
+ * against the target's actual type, keeping the merkle chain intact.
  *
  * The remote path lives in this same module further down (see fetchRemote).
  */
@@ -59,6 +65,30 @@ export function parseTreeBody(buf) {
 		i = nul + 21
 	}
 	return entries
+}
+
+/**
+ * Parse a tag object body. Annotated tags have the shape:
+ *   object <sha>
+ *   type <commit|tree|blob|tag>
+ *   tag <name>
+ *   tagger <ident>
+ *   <blank>
+ *   <message>
+ */
+export function parseTagBody(buf) {
+	const text = buf.toString('utf8')
+	const split = text.indexOf('\n\n')
+	const headerBlock = split >= 0 ? text.slice(0, split) : text
+	const message = split >= 0 ? text.slice(split + 2) : ''
+	const out = { message }
+	for (const line of headerBlock.split('\n')) {
+		if (line.startsWith('object ')) out.object = line.slice(7).trim()
+		else if (line.startsWith('type ')) out.type = line.slice(5).trim()
+		else if (line.startsWith('tag ')) out.tag = line.slice(4).trim()
+		else if (line.startsWith('tagger ')) out.tagger = line.slice(7)
+	}
+	return out
 }
 
 /** Parse a commit object body — we only need tree + parents for our use. */
@@ -410,8 +440,35 @@ export function readObject(repo, sha) {
 	return obj
 }
 
+/**
+ * Follow tag objects until a non-tag object is reached. Returns the final
+ * { sha, type, content }. Each hop is hash-verified by readObject, and the
+ * tag's `type` header is checked against the target's actual object type —
+ * this keeps the chain merkle-verified and rejects malformed tags.
+ */
+export function peel(repo, sha) {
+	let curSha = sha
+	let cur = readObject(repo, sha)
+	const seen = new Set([sha])
+	while (cur.type === 'tag') {
+		const tag = parseTagBody(cur.content)
+		if (!tag.object || !/^[0-9a-f]{40}$/.test(tag.object)) {
+			throw new Error(`tag ${curSha}: missing or malformed object header`)
+		}
+		if (seen.has(tag.object)) throw new Error(`tag ${curSha}: cycle through ${tag.object}`)
+		const next = readObject(repo, tag.object)
+		if (tag.type && next.type !== tag.type) {
+			throw new Error(`tag ${curSha}: type mismatch (header says ${tag.type}, target is ${next.type})`)
+		}
+		seen.add(tag.object)
+		curSha = tag.object
+		cur = next
+	}
+	return { sha: curSha, type: cur.type, content: cur.content }
+}
+
 export function readCommit(repo, sha) {
-	const o = readObject(repo, sha)
+	const o = peel(repo, sha)
 	if (o.type !== 'commit') throw new Error(`${sha} is not a commit (${o.type})`)
 	return parseCommitBody(o.content)
 }
@@ -472,10 +529,14 @@ export async function fetchTree({ source, ref, dest }) {
 	} else {
 		repo = openLocal(source)
 	}
-	const commit = resolve(repo, ref)
-	const c = readCommit(repo, commit)
+	const resolved = resolve(repo, ref)
+	const peeled = peel(repo, resolved)
+	if (peeled.type !== 'commit') {
+		throw new Error(`${ref} resolves to a ${peeled.type}, not a commit`)
+	}
+	const c = parseCommitBody(peeled.content)
 	const files = checkout(repo, c.tree, dest)
-	return { commit, tree: c.tree, files }
+	return { commit: peeled.sha, tree: c.tree, files }
 }
 
 /* ============================================================
