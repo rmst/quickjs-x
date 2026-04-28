@@ -10,7 +10,8 @@ import {
 	setWriteHandler as _setWriteHandler,
 } from 'qn_vm'
 
-export { Transform, Duplex } from './transform.js'
+import { Transform, Duplex } from './transform.js'
+export { Transform, Duplex }
 
 /**
  * UTF-8 streaming decoder that handles incomplete multi-byte sequences.
@@ -705,3 +706,5 @@ export class Writable extends EventEmitter {
 		return this.#destroyed
 	}
 }
+
+export default { Readable, Writable, Transform, Duplex }

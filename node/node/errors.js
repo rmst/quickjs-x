@@ -7,3 +7,5 @@ export class NodeCompatibilityError extends Error {
 		this.name = 'NodeCompatibilityError'
 	}
 }
+
+export default { NodeCompatibilityError }

@@ -146,3 +146,5 @@ export class AbortController {
 		this._signal._abort(reason)
 	}
 }
+
+export default { AbortSignal, AbortController }

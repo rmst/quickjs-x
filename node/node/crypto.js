@@ -315,3 +315,14 @@ export function getCiphers() {
 export function getCurves() {
 	return ['prime256v1', 'secp384r1', 'secp521r1', 'curve25519']
 }
+
+export default {
+	createHash, Hash,
+	createHmac, Hmac,
+	createCipheriv, createDecipheriv,
+	createECDH,
+	createSign, createVerify,
+	randomBytes, randomFillSync, randomUUID,
+	timingSafeEqual,
+	getHashes, getCiphers, getCurves,
+}

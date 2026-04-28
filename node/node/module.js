@@ -231,3 +231,5 @@ function blankTypeScriptTypes(code, tokens) {
 	out += code.slice(pos)
 	return out
 }
+
+export default { createRequire, stripTypeScriptTypes }

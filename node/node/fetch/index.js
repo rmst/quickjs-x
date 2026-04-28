@@ -693,3 +693,5 @@ export async function fetch(input, init = {}) {
 		}
 	}
 }
+
+export default { fetch, Headers, Request, Response }

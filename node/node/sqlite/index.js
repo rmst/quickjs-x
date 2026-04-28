@@ -152,3 +152,5 @@ export class StatementSync {
         return this.#stmt.sourceSQL;
     }
 }
+
+export default { DatabaseSync, StatementSync }

@@ -16,10 +16,12 @@ import {
 } from 'qn:uv-fs'
 
 // Re-export glob functions from separate module
-export { globSync, glob } from './glob.js'
+import { globSync, glob } from './glob.js'
+export { globSync, glob }
 
 // Re-export watch / FSWatcher
-export { watch, FSWatcher } from './watch.js'
+import { watch, FSWatcher } from './watch.js'
+export { watch, FSWatcher }
 
 /**
  * Dirent class for directory entries (used by readdirSync with withFileTypes)
@@ -471,7 +473,8 @@ export function lchownSync(path, uid, gid) {
 	native_lchown(path, uid, gid)
 }
 
-export { createReadStream, createWriteStream } from './streams.js'
+import { createReadStream, createWriteStream } from './streams.js'
+export { createReadStream, createWriteStream }
 
 export const constants = {
 	F_OK: 0,
@@ -496,4 +499,21 @@ export const constants = {
 	S_IFCHR,
 	S_IFIFO,
 	S_IFSOCK,
+}
+
+export default {
+	Dirent,
+	writeFileSync, appendFileSync, readFileSync,
+	readdirSync, mkdirSync,
+	statSync, lstatSync, existsSync,
+	openSync, closeSync,
+	unlinkSync, linkSync, symlinkSync, renameSync,
+	chmodSync, copyFileSync, cpSync,
+	realpathSync, readlinkSync, rmSync,
+	mkdtempSync, accessSync, utimesSync,
+	chownSync, lchownSync,
+	globSync, glob,
+	watch, FSWatcher,
+	createReadStream, createWriteStream,
+	constants,
 }

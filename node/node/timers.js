@@ -69,3 +69,9 @@ export function clearInterval(handle) {
 		_intervals.delete(id)
 	}
 }
+
+export default {
+	setTimeout, clearTimeout,
+	setImmediate, clearImmediate,
+	setInterval, clearInterval,
+}

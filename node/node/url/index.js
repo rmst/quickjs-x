@@ -15,5 +15,9 @@
  * Use the ASCII/Punycode form instead (e.g., https://xn--mnchen-3ya.de/).
  */
 
-export { URL } from "./URL.js";
-export { URLSearchParams } from "./URLSearchParams.js";
+import { URL } from "./URL.js";
+import { URLSearchParams } from "./URLSearchParams.js";
+
+export { URL, URLSearchParams }
+
+export default { URL, URLSearchParams }
