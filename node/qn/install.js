@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, cpSync, existsSync, rea
 import { execFileSync } from "node:child_process"
 import { join, resolve, basename, dirname } from "node:path"
 import { fetchTree } from "./git.js"
+import { build as bundleBuild } from "./bundle.js"
 
 /**
  * Parse a dependency specifier into a type and value.
@@ -350,10 +351,96 @@ function collapseSourceConditions(node) {
 }
 
 /**
+ * Compile a single sourceDep in node_modules: bundle each source-shaped
+ * exports/imports leaf into ./dist/X.js using qn:bundle and rewrite the leaf
+ * to point at the bundled file. Mirrors the per-dep compile pass that lives
+ * in jix's `compileDeps: true`, but runs in-process with no shell hop.
+ *
+ * Each leaf is processed independently; if a leaf's bundle fails (e.g.
+ * qn:bundle hits an unsupported feature), we leave that leaf unchanged and
+ * warn — consumers that don't import it are unaffected.
+ *
+ * Accepted leaf shapes (after `installSourceDeps` has done its rewrite):
+ *   "./src/X.{ts,tsx,js,jsx}"   ← typical shape after tree-mirror rewrite
+ *   "./dist/X.{js,mjs}"          ← upstream-published shape, when no rewrite hit
+ * Anything else (URL-style, glob, missing file) is passed through verbatim.
+ *
+ * @param {string} pkgDir   - absolute path to the installed dep
+ * @param {string} pkgName  - name of the dep (used to mark self-imports external)
+ */
+async function compileSourceDep(pkgDir, pkgName) {
+	let pkgJsonPath = join(pkgDir, "package.json")
+	if (!existsSync(pkgJsonPath)) return
+	let pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"))
+
+	let bundleEntry = async (srcRel) => {
+		let entry = join(pkgDir, srcRel)
+		let distRel = srcRel.replace(/^src\//, "dist/").replace(/\.[jt]sx?$/, ".js")
+		let outDir = join(pkgDir, dirname(distRel))
+		await bundleBuild({
+			entrypoints: [entry],
+			outdir: outDir,
+			target: "node",
+			external: [pkgName, pkgName + "/*"],
+		})
+		return "./" + distRel
+	}
+
+	let resolveSrc = (target) => {
+		if (typeof target !== "string") return null
+		if (target.includes("*")) return null
+		if (target.startsWith("./src/")) {
+			let rel = target.slice(2)
+			return existsSync(join(pkgDir, rel)) ? rel : null
+		}
+		if (target.startsWith("./dist/")) {
+			let base = "src/" + target.slice("./dist/".length).replace(/\.m?js$/, "")
+			for (let ext of [".ts", ".tsx", ".js", ".jsx"]) {
+				if (existsSync(join(pkgDir, base + ext))) return base + ext
+			}
+			return null
+		}
+		return null
+	}
+
+	let walk = async (node) => {
+		if (typeof node === "string") {
+			let srcRel = resolveSrc(node)
+			if (!srcRel) return node
+			try {
+				return await bundleEntry(srcRel)
+			} catch (e) {
+				console.warn(`compile-deps: skipping ${pkgName}:${srcRel} (bundle failed: ${e.message}); leaving leaf as ${node}`)
+				return node
+			}
+		}
+		if (Array.isArray(node)) {
+			let out = []
+			for (let v of node) out.push(await walk(v))
+			return out
+		}
+		if (node && typeof node === "object") {
+			let out = {}
+			for (let [k, v] of Object.entries(node)) out[k] = await walk(v)
+			return out
+		}
+		return node
+	}
+
+	let changed = false
+	if (pkg.exports) { pkg.exports = await walk(pkg.exports); changed = true }
+	if (pkg.imports) { pkg.imports = await walk(pkg.imports); changed = true }
+	if (changed) writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2))
+}
+
+/**
  * Install dependencies from a package.json file.
  * @param {string} projectDir - directory containing package.json
  * @param {object} [options]
  * @param {boolean} [options.dev=false] - include devDependencies
+ * @param {boolean} [options.compileDeps=false] - bundle TS-shaped sourceDependencies
+ *   into ./dist/*.js so the resulting node_modules is consumable by node, plain
+ *   bundlers, and browsers (not just qn/bun/deno).
  */
 export async function install(projectDir, options = {}) {
 	let pkgJsonPath = join(projectDir, "package.json")
@@ -424,6 +511,12 @@ export async function install(projectDir, options = {}) {
 
 		if (sourceNames.length > 0) {
 			await installSourceDeps(sourceDeps, nodeModulesDir, projectDir)
+			if (options.compileDeps) {
+				for (let name of sourceNames) {
+					console.log(`  compiling ${name}...`)
+					await compileSourceDep(join(nodeModulesDir, name), name)
+				}
+			}
 		}
 	}
 
@@ -442,20 +535,26 @@ export async function install(projectDir, options = {}) {
  */
 export async function cli(args) {
 	let dev = false
+	let compileDeps = false
 	let dir = process.cwd()
 
 	for (let i = 0; i < args.length; i++) {
 		let arg = args[i]
 		if (arg === "--dev" || arg === "-D") {
 			dev = true
+		} else if (arg === "--compile-deps") {
+			compileDeps = true
 		} else if (arg === "--help" || arg === "-h") {
 			console.log(`Usage: qn install [options]
 
 Install dependencies from package.json into node_modules/.
 
 Options:
-  --dev, -D     Include devDependencies
-  --help, -h    Show this help
+  --dev, -D         Include devDependencies
+  --compile-deps    Bundle TS-shaped sourceDependencies into ./dist/*.js so the
+                    resulting node_modules is consumable by node, plain bundlers,
+                    and browsers (not just qn/bun/deno).
+  --help, -h        Show this help
 
 Supported dependency specifiers (in "dependencies"):
   "file:../path"              Local directory
@@ -480,5 +579,5 @@ Not yet supported:
 		}
 	}
 
-	await install(dir, { dev })
+	await install(dir, { dev, compileDeps })
 }

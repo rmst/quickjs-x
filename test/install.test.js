@@ -820,3 +820,217 @@ describe('qn install — sourceDependencies', () => {
 		}
 	})
 })
+
+describe('qn install --compile-deps', () => {
+	function makeUpstream(pkgJson, files = {}) {
+		let repoDir = makeRepo()
+		writeFileSync(join(repoDir, 'package.json'), JSON.stringify(pkgJson))
+		for (let [path, content] of Object.entries(files)) {
+			let full = join(repoDir, path)
+			mkdirSync(join(full, '..'), { recursive: true })
+			writeFileSync(full, content)
+		}
+		let sha = commitAll(repoDir, 'init')
+		return { repoDir, sha }
+	}
+
+	test('bundles a TS sourceDep to ./dist/*.js and rewrites exports', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			exports: { ".": "./dist/index.mjs" },
+		}, {
+			'src/index.ts': 'export const greet = (name: string): string => `hi ${name}`\n',
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir, { compileDeps: true })
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.exports, { ".": "./dist/index.js" })
+			assert.ok(existsSync(join(projectDir, 'node_modules/lib/dist/index.js')))
+			let bundled = readFileSync(join(projectDir, 'node_modules/lib/dist/index.js'), 'utf8')
+			// TS annotation must be stripped, runtime code preserved.
+			assert.ok(!/: string/.test(bundled), 'TS annotation should be stripped')
+			assert.ok(/hi \$\{name\}/.test(bundled), 'runtime code should be preserved')
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('compiles imports the same way as exports', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			imports: { "#util": "./dist/util.mjs" },
+		}, {
+			'src/util.ts': 'export const id = <T>(x: T): T => x\n',
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir, { compileDeps: true })
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.imports, { "#util": "./dist/util.js" })
+			assert.ok(existsSync(join(projectDir, 'node_modules/lib/dist/util.js')))
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('walks conditional exports objects', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			exports: {
+				".": {
+					import: "./dist/index.mjs",
+					require: "./dist/index.cjs",
+				},
+			},
+		}, {
+			'src/index.ts': 'export default 1\n',
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir, { compileDeps: true })
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			// Only ./dist/X.{js,mjs} leaves with a matching source get rewritten;
+			// require → ./dist/index.cjs has no source-conventional match (no .cjs
+			// rewrite), so installSourceDeps already left it as ./dist/index.cjs and
+			// compile-deps leaves it alone too. The .mjs leaf bundles successfully.
+			assert.strictEqual(installed.exports['.'].import, './dist/index.js')
+			assert.ok(existsSync(join(projectDir, 'node_modules/lib/dist/index.js')))
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('explicit ./src/ override is bundled directly', async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			exports: { ".": "./dist/index.mjs" },
+		}, {
+			'src/index.ts': 'export const v = 7\n',
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: {
+					lib: { git: repoDir, rev: sha, exports: { ".": "./src/index.ts" } },
+				},
+			}))
+
+			await install(projectDir, { compileDeps: true })
+
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.exports, { ".": "./dist/index.js" })
+			assert.ok(existsSync(join(projectDir, 'node_modules/lib/dist/index.js')))
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('passes through leaves with no resolvable source', async () => {
+		// upstream ships a real, prebuilt ./dist/index.mjs (no /src/ at all).
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			exports: { ".": "./dist/index.mjs" },
+		}, {
+			'dist/index.mjs': 'export const v = 1\n',
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+
+			await install(projectDir, { compileDeps: true })
+
+			// installSourceDeps tree-mirror rewrote the leaf to ./src/index.ts, but
+			// no such source exists, so compile-deps leaves the (broken-looking)
+			// leaf untouched. This matches jix's compile-deps behavior — the user
+			// gets a clear runtime error if they actually import the broken entry.
+			let installed = JSON.parse(readFileSync(join(projectDir, 'node_modules/lib/package.json'), 'utf8'))
+			assert.deepStrictEqual(installed.exports, { ".": "./src/index.ts" })
+			assert.ok(!existsSync(join(projectDir, 'node_modules/lib/dist/index.js')))
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+
+	test('no-op when there are no sourceDependencies', async () => {
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+			}))
+			// Should not throw.
+			await install(projectDir, { compileDeps: true })
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('node can import the compiled sourceDep via its package name', { skip: process.env.NO_NODEJS_TESTS ? 'NO_NODEJS_TESTS set' : false }, async () => {
+		let { repoDir, sha } = makeUpstream({
+			name: 'lib',
+			exports: { ".": "./dist/index.mjs" },
+		}, {
+			'src/index.ts': 'export const greet = (name: string): string => `hi ${name}`\n',
+		})
+		let dir = mktempdir()
+		try {
+			let projectDir = join(dir, 'project')
+			mkdirSync(projectDir)
+			writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+				name: 'project',
+				sourceDependencies: { lib: { git: repoDir, rev: sha } },
+			}))
+			await install(projectDir, { compileDeps: true })
+
+			// Spawn `node` to import the bundled output.
+			let { execFileSync } = await import('node:child_process')
+			let out = execFileSync('node', [
+				'--input-type=module',
+				'-e', 'import { greet } from "lib"; console.log(greet("world"))',
+			], { cwd: projectDir, encoding: 'utf8' })
+			assert.strictEqual(out.trim(), 'hi world')
+		} finally {
+			rmSync(dir, { recursive: true })
+			rmSync(repoDir, { recursive: true, force: true })
+		}
+	})
+})
