@@ -12,10 +12,12 @@ import assert from 'node:assert'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync, symlinkSync, lstatSync, readlinkSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 
 import {
 	openLocal, resolve, readObject, readCommit, readTree,
-	checkout, fetchTree, parseTreeBody, parseCommitBody,
+	checkout, fetchTree, peel,
+	parseTreeBody, parseCommitBody, parseTagBody,
 } from '../node/qn/git.js'
 import {
 	gitCmd as git, makeRepo, commitAll,
@@ -262,10 +264,84 @@ describe('qn:git — fetchTree convenience', () => {
 	})
 })
 
+describe('qn:git — annotated tags', () => {
+	test('readCommit and fetchTree peel an annotated tag (passed by sha)', async () => {
+		const dir = makeRepo()
+		try {
+			writeFileSync(join(dir, 'a.txt'), 'tagged\n')
+			const commitSha = commitAll(dir, 'init')
+			git(dir, 'tag', '-a', 'v1', '-m', 'release one')
+			const tagSha = git(dir, 'rev-parse', 'v1').trim()
+			assert.notEqual(tagSha, commitSha, 'annotated tag should be its own object')
+
+			const repo = openLocal(dir)
+			// resolve returns the literal pointee (tag object, not commit).
+			assert.equal(resolve(repo, 'v1'), tagSha)
+			// readCommit transparently peels the tag.
+			const c = readCommit(repo, tagSha)
+			assert.match(c.tree, /^[0-9a-f]{40}$/)
+			// peel returns commit sha + raw content.
+			const p = peel(repo, tagSha)
+			assert.equal(p.type, 'commit')
+			assert.equal(p.sha, commitSha)
+
+			// fetchTree by tag-object sha should return the peeled commit sha.
+			const dest = mkdtempSync(join(tmpdir(), 'qn-git-tag-'))
+			try {
+				const r = await fetchTree({ source: dir, ref: tagSha, dest })
+				assert.equal(r.commit, commitSha)
+				assert.equal(readFileSync(join(dest, 'a.txt'), 'utf8'), 'tagged\n')
+			} finally { rmSync(dest, { recursive: true, force: true }) }
+		} finally { rmSync(dir, { recursive: true, force: true }) }
+	})
+
+	test('peel walks a tag-of-tag chain', () => {
+		const dir = makeRepo()
+		try {
+			writeFileSync(join(dir, 'a.txt'), 'chained\n')
+			const commitSha = commitAll(dir, 'init')
+			git(dir, 'tag', '-a', 'v1', '-m', 'one')
+			const tag1 = git(dir, 'rev-parse', 'v1').trim()
+			// Build a tag-of-tag via plumbing: mktag writes a tag object, update-ref names it.
+			const body = `object ${tag1}\ntype tag\ntag v2\ntagger A <a@b> 0 +0000\n\nv2 wraps v1\n`
+			const tag2 = execFileSync('git', ['-C', dir, 'mktag'], { input: body }).toString().trim()
+			git(dir, 'update-ref', 'refs/tags/v2', tag2)
+
+			const repo = openLocal(dir)
+			const p = peel(repo, tag2)
+			assert.equal(p.sha, commitSha, 'should follow tag→tag→commit')
+			assert.equal(p.type, 'commit')
+		} finally { rmSync(dir, { recursive: true, force: true }) }
+	})
+})
+
 const GIT_HTTP_BACKEND = findGitHttpBackend()
 const remoteDescribe = GIT_HTTP_BACKEND ? describe : (describe.skip ?? (() => {}))
 
 remoteDescribe('qn:git — remote via local git-http-backend', () => {
+	test('fetchTree by annotated-tag sha peels to commit over HTTP', async () => {
+		const repoDir = makeRepo()
+		try {
+			writeFileSync(join(repoDir, 'a.txt'), 'tagged-remote\n')
+			const commitSha = commitAll(repoDir, 'init')
+			git(repoDir, 'tag', '-a', 'v1', '-m', 'release')
+			const tagSha = git(repoDir, 'rev-parse', 'v1').trim()
+			git(repoDir, 'gc', '--quiet')
+			git(repoDir, 'update-server-info')
+
+			const { server, url } = await startGitHttpServer(repoDir + '/..', GIT_HTTP_BACKEND)
+			try {
+				const repoBase = url + '/' + repoDir.split('/').pop() + '/.git'
+				const dest = mkdtempSync(join(tmpdir(), 'qn-git-rtag-'))
+				try {
+					const r = await fetchTree({ source: repoBase, ref: tagSha, dest })
+					assert.equal(r.commit, commitSha, 'fetchTree should peel to commit sha')
+					assert.equal(readFileSync(join(dest, 'a.txt'), 'utf8'), 'tagged-remote\n')
+				} finally { rmSync(dest, { recursive: true, force: true }) }
+			} finally { server.close() }
+		} finally { rmSync(repoDir, { recursive: true, force: true }) }
+	})
+
 	test('fetchTree against a local HTTP git server', async () => {
 		const repoDir = makeRepo()
 		try {
