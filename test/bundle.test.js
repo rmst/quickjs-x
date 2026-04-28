@@ -538,6 +538,102 @@ describe('qn bundle', () => {
 		}
 	})
 
+	test('format=esm exposes the entry exports as real top-level exports', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'mod.js'), 'export const greet = (n) => `hi ${n}`\n')
+			writeFileSync(join(dir, 'main.js'),
+				'import { greet } from "./mod.js"\n' +
+				'export const hello = (n) => greet(n).toUpperCase()\n' +
+				'export default 42\n')
+			await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
+			assert.match(bundle, /^export var hello\b/m)
+			assert.match(bundle, /^export default\b/m)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('format=esm output is re-bundleable: another build can ingest its exports', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'mod.js'), 'export const greet = (n) => `hi ${n}`\n')
+			writeFileSync(join(dir, 'lib.js'),
+				'import { greet } from "./mod.js"\n' +
+				'export const hello = (n) => greet(n).toUpperCase()\n')
+			await build({ entrypoints: [join(dir, 'lib.js')], outdir: join(dir, 'dist1') })
+			writeFileSync(join(dir, 'app.js'),
+				'import { hello } from "./dist1/lib.js"\nconsole.log(hello("qn"))\n')
+			await build({ entrypoints: [join(dir, 'app.js')], outdir: join(dir, 'dist2') })
+			assert.strictEqual(runBundle(join(dir, 'dist2/app.js')), 'HI QN')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('format=esm preserves named re-exports (export { x } from)', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'mod.js'), 'export const a = 1\nexport const b = 2\n')
+			writeFileSync(join(dir, 'main.js'),
+				'export { a, b as B } from "./mod.js"\n' +
+				'export const c = 3\n')
+			await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			writeFileSync(join(dir, 'app.js'),
+				'import { a, B, c } from "./dist/main.js"\nconsole.log(a, B, c)\n')
+			await build({ entrypoints: [join(dir, 'app.js')], outdir: join(dir, 'dist2') })
+			assert.strictEqual(runBundle(join(dir, 'dist2/app.js')), '1 2 3')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('format=esm preserves namespace re-exports (export * as ns from)', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'mod.js'), 'export const a = 1\nexport const b = 2\n')
+			writeFileSync(join(dir, 'main.js'), 'export * as M from "./mod.js"\n')
+			await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			writeFileSync(join(dir, 'app.js'),
+				'import { M } from "./dist/main.js"\nconsole.log(M.a, M.b)\n')
+			await build({ entrypoints: [join(dir, 'app.js')], outdir: join(dir, 'dist2') })
+			assert.strictEqual(runBundle(join(dir, 'dist2/app.js')), '1 2')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('format=esm errors on `export *` (without `as`)', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'mod.js'), 'export const a = 1\n')
+			writeFileSync(join(dir, 'main.js'), 'export * from "./mod.js"\n')
+			let err
+			try {
+				await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			} catch (e) { err = e }
+			assert.ok(err, 'expected build to throw')
+			assert.match(err.message, /export \*/)
+			assert.match(err.message, /not supported/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('format=iife keeps closure-wrapped output (no top-level exports)', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'), 'export const x = 1\nconsole.log(x)\n')
+			await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist'), format: 'iife' })
+			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
+			assert.match(bundle, /^\(function\(\)\{/)
+			assert.doesNotMatch(bundle, /^export /m)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
 	test('--define rejects invalid keys', async () => {
 		const dir = mktempdir()
 		try {

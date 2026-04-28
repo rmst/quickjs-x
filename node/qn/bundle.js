@@ -24,8 +24,13 @@ const TARGETS = ["browser", "node"]
 // Sucrase token type constants we care about (from
 // vendor/sucrase-js/sucrase/src/parser/tokenizer/types.js). Hard-coded rather
 // than imported to keep the bundler's dependency surface narrow.
-const TT = { eof: 6144, string: 4608, name: 5632, parenL: 13824, parenR: 14336, semi: 16384, dot: 19456, _export: 89104, _import: 90640 }
+const TT = {
+	string: 4608, name: 5632, eof: 6144, parenL: 13824, parenR: 14336,
+	comma: 15360, semi: 16384, dot: 19456, eq: 29728, star: 52235,
+	_default: 67600, _export: 89104, _import: 90640, _as: 112144,
+}
 const CK_FROM = 13 // ContextualKeyword._from
+const CK_AS = 3
 // IdentifierRole.Access — used for read-references; declarations and import/
 // export specifier names use other values, which we deliberately skip when
 // applying --define.
@@ -349,6 +354,97 @@ function extractDefineMatches(code, ext, defines) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Entry export enumeration                                            *
+ *                                                                     *
+ * For `format=esm` we want the bundle to expose real top-level        *
+ * `export` declarations so downstream tools (esbuild/Rollup/Vite) can *
+ * statically see the entry's exports. The entry itself is still       *
+ * closure-wrapped in __qn_modules; after running it we read its       *
+ * mod.exports and re-emit the names as ESM exports. Snapshot          *
+ * semantics: importers see the values at module-load time, not live   *
+ * bindings — fine for compiled npm packages whose exports don't get   *
+ * reassigned post-init.                                               *
+ * ------------------------------------------------------------------ */
+
+// Parse the entry source to detect unsupported `export *` (without `as`).
+// We do this on the *original* source because Sucrase compiles `export *`
+// into an opaque runtime helper call that's harder to identify reliably.
+function checkUnsupportedStarExport(source, ext, filePath) {
+	const isJSX = ext === ".jsx" || ext === ".tsx"
+	const isTS = ext === ".ts" || ext === ".tsx"
+	const tokens = parse(source, isJSX, isTS, false).tokens
+	for (let i = 0; i < tokens.length; i++) {
+		if (tokens[i].type !== TT._export) continue
+		const a = tokens[i + 1]
+		if (!a || a.type !== TT.star) continue
+		const b = tokens[i + 2]
+		const isAs = b && (b.type === TT._as || (b.type === TT.name && b.contextualKeyword === CK_AS))
+		if (!isAs) {
+			throw new Error(
+				`bundle: \`export *\` is not supported in entry "${filePath}" with format=esm. ` +
+				`Use named re-exports (\`export { x } from "..."\`) or \`export * as ns from "..."\`.`)
+		}
+	}
+}
+
+// Walk Sucrase's CJS-shaped output for the entry and collect every name that
+// gets attached to `exports`. Catches all the forms ESM allows: declaration
+// exports, named exports (with rename), default exports, and re-exports.
+// `export *` is rejected upstream by checkUnsupportedStarExport.
+function collectEntryExportNames(cjsCode) {
+	const tokens = parse(cjsCode, false, false, false).tokens
+	const names = new Set()
+	let hasDefault = false
+	const tokText = (t) => cjsCode.slice(t.start, t.end)
+	const recordName = (name) => {
+		if (name === "__esModule") return
+		if (name === "default") { hasDefault = true; return }
+		if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) names.add(name)
+	}
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i]
+		if (t.type === TT.eof) break
+		// Pattern: `exports . NAME =` (Sucrase emits this for export decls).
+		if (t.type === TT.name && tokText(t) === "exports") {
+			const a = tokens[i + 1], b = tokens[i + 2], c = tokens[i + 3]
+			if (a && a.type === TT.dot && b && (b.type === TT.name || b.type === TT._default) && c && c.type === TT.eq) {
+				recordName(tokText(b))
+			}
+		}
+		// Pattern: `Object . defineProperty ( exports , "NAME"` — re-exports
+		// from another module are emitted via Object.defineProperty.
+		if (t.type === TT.name && tokText(t) === "Object") {
+			const seq = [tokens[i + 1], tokens[i + 2], tokens[i + 3], tokens[i + 4], tokens[i + 5], tokens[i + 6]]
+			if (seq.every(Boolean)
+				&& seq[0].type === TT.dot
+				&& seq[1].type === TT.name && tokText(seq[1]) === "defineProperty"
+				&& seq[2].type === TT.parenL
+				&& seq[3].type === TT.name && tokText(seq[3]) === "exports"
+				&& seq[4].type === TT.comma
+				&& seq[5].type === TT.string) {
+				const raw = tokText(seq[5])
+				recordName(raw.slice(1, -1))
+			}
+		}
+		// Pattern: `_createNamedExportFrom ( <name> , "NAME"` — Sucrase emits
+		// this helper for `export { x } from "..."`. The second argument is
+		// the local export name on the bundle's `exports` object.
+		if (t.type === TT.name && tokText(t) === "_createNamedExportFrom") {
+			const seq = [tokens[i + 1], tokens[i + 2], tokens[i + 3], tokens[i + 4]]
+			if (seq.every(Boolean)
+				&& seq[0].type === TT.parenL
+				&& seq[1].type === TT.name
+				&& seq[2].type === TT.comma
+				&& seq[3].type === TT.string) {
+				const raw = tokText(seq[3])
+				recordName(raw.slice(1, -1))
+			}
+		}
+	}
+	return { names: [...names], hasDefault }
+}
+
+/* ------------------------------------------------------------------ *
  * Per-module load + transform                                         *
  * ------------------------------------------------------------------ */
 
@@ -441,6 +537,7 @@ function bundleEntry(entry, opts) {
 
 	const stack = [entryAbs]
 	assignId(entryAbs)
+	let entryExports = null
 
 	// Only used for the JSX-runtime import that Sucrase auto-injects during
 	// transform (it isn't part of the original source tokens we parsed).
@@ -512,9 +609,17 @@ function bundleEntry(entry, opts) {
 
 		checkModuleSyntax(rewritten, filePath)
 		modules.set(id, { filePath, code: rewritten })
+
+		// For format=esm, scan the entry's transformed body for the names it
+		// attaches to mod.exports — those become real top-level ESM exports
+		// of the bundle so downstream tools can ingest it as a library.
+		if (filePath === entryAbs && opts.format === "esm" && kind === "esm") {
+			checkUnsupportedStarExport(source, ext, filePath)
+			entryExports = collectEntryExportNames(rewritten)
+		}
 	}
 
-	return { entryId: ids.get(entryAbs), modules, warnings, externals: usedExternals }
+	return { entryId: ids.get(entryAbs), modules, warnings, externals: usedExternals, entryExports }
 
 	// Returns null for unresolved specs, {kind: "internal", id} for bundled
 	// modules, or {kind: "external", spec} for externals. The spec returned for
@@ -547,7 +652,7 @@ function bundleEntry(entry, opts) {
 	}
 }
 
-function emitBundle({ entryId, modules, externals, format }) {
+function emitBundle({ entryId, modules, externals, format, entryExports }) {
 	const chunks = []
 	const hasExternals = externals.size > 0
 	const canUseEsmImports = format === "esm"
@@ -589,7 +694,17 @@ function emitBundle({ entryId, modules, externals, format }) {
 	for (const [id, { filePath, code }] of modules) {
 		chunks.push(`\n// ${filePath}\n__qn_modules[${JSON.stringify(id)}] = function(exports, require, module) {\n${code}\n};\n`)
 	}
-	chunks.push(`\n__qn_require(${JSON.stringify(entryId)});\n`)
+	if (entryExports && (entryExports.names.length > 0 || entryExports.hasDefault)) {
+		chunks.push(`\nvar __qn_entry = __qn_require(${JSON.stringify(entryId)});\n`)
+		for (const name of entryExports.names) {
+			chunks.push(`export var ${name} = __qn_entry.${name};\n`)
+		}
+		if (entryExports.hasDefault) {
+			chunks.push(`export default __qn_entry.default;\n`)
+		}
+	} else {
+		chunks.push(`\n__qn_require(${JSON.stringify(entryId)});\n`)
+	}
 	return chunks.join("")
 }
 
@@ -650,6 +765,7 @@ export async function build(options) {
 	const outdir = options.outdir ? resolve(options.outdir) : null
 	const production = options.production !== false
 	const opts = {
+		format,
 		target,
 		external: options.external || [],
 		alias: options.alias || {},
@@ -664,9 +780,9 @@ export async function build(options) {
 	const writtenPaths = new Map()
 
 	for (const entry of entrypoints) {
-		const { entryId, modules, warnings, externals: usedExternals } = bundleEntry(entry, opts)
+		const { entryId, modules, warnings, externals: usedExternals, entryExports } = bundleEntry(entry, opts)
 		for (const message of warnings) logs.push({ level: "warning", message })
-		let body = emitBundle({ entryId, modules, externals: usedExternals, format })
+		let body = emitBundle({ entryId, modules, externals: usedExternals, format, entryExports })
 		if (format === "iife") body = `(function(){\n${body}\n})();\n`
 
 		let outPath = null
