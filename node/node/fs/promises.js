@@ -12,6 +12,7 @@ import {
 	cpSync,
 	constants,
 } from 'node:fs'
+import { toPath } from './_path.js'
 
 function wrapSync(fn) {
 	return (...args) => {
@@ -65,7 +66,7 @@ export async function readFile(path, options) {
 	}
 	const useUtf8 = encoding === 'utf8' || encoding === 'utf-8'
 
-	const p = String(path)
+	const p = toPath(path)
 	const fd = await uv_fs.open(p, flag)
 	try {
 		const st = await uv_fs.fstat(fd)
@@ -122,7 +123,7 @@ export async function writeFile(path, data, options) {
 		}
 	}
 
-	const p = String(path)
+	const p = toPath(path)
 	let buf
 	if (typeof data === 'string') {
 		buf = new TextEncoder().encode(data)
@@ -149,11 +150,11 @@ export async function appendFile(path, data, options) {
 /* ==== Path operations (thin wrappers) ==== */
 
 export function stat(path) {
-	return uv_fs.stat(String(path)).then(addStatMethods)
+	return uv_fs.stat(toPath(path)).then(addStatMethods)
 }
 
 export function lstat(path) {
-	return uv_fs.lstat(String(path)).then(addStatMethods)
+	return uv_fs.lstat(toPath(path)).then(addStatMethods)
 }
 
 // uv_dirent_type → S_IF* bits; 0 (UNKNOWN) means we have to lstat.
@@ -163,7 +164,7 @@ export async function readdir(path, options) {
 	if (options && options.recursive) {
 		throw new Error("readdir: 'recursive' option is not supported")
 	}
-	const p = String(path)
+	const p = toPath(path)
 	const entries = await uv_fs.readdir(p)
 	if (options && options.withFileTypes) {
 		const results = []
@@ -201,7 +202,7 @@ export async function mkdir(path, options) {
 		mode = options
 	}
 
-	const p = String(path)
+	const p = toPath(path)
 	if (!recursive) return uv_fs.mkdir(p, mode)
 
 	const parts = p.split('/').filter(s => s.length > 0)
@@ -232,32 +233,32 @@ export async function mkdir(path, options) {
 }
 
 export function unlink(path) {
-	return uv_fs.unlink(String(path))
+	return uv_fs.unlink(toPath(path))
 }
 
 export function rename(oldPath, newPath) {
-	return uv_fs.rename(String(oldPath), String(newPath))
+	return uv_fs.rename(toPath(oldPath), toPath(newPath))
 }
 
 export function symlink(target, path, type) {
 	// type param is only meaningful on Windows; accept but ignore on POSIX
-	return uv_fs.symlink(String(target), String(path))
+	return uv_fs.symlink(toPath(target), toPath(path))
 }
 
 export function readlink(path) {
-	return uv_fs.readlink(String(path))
+	return uv_fs.readlink(toPath(path))
 }
 
 export function realpath(path) {
-	return uv_fs.realpath(String(path))
+	return uv_fs.realpath(toPath(path))
 }
 
 export function access(path, mode) {
-	return uv_fs.access(String(path), mode ?? 0)
+	return uv_fs.access(toPath(path), mode ?? 0)
 }
 
 export function chmod(path, mode) {
-	return uv_fs.chmod(String(path), mode)
+	return uv_fs.chmod(toPath(path), mode)
 }
 
 export function utimes(path, atime, mtime) {
@@ -266,31 +267,31 @@ export function utimes(path, atime, mtime) {
 		if (typeof t === 'string') return new Date(t).getTime() / 1000
 		return Number(t)
 	}
-	return uv_fs.utimes(String(path), toSec(atime), toSec(mtime))
+	return uv_fs.utimes(toPath(path), toSec(atime), toSec(mtime))
 }
 
 export function chown(path, uid, gid) {
-	return uv_fs.chown(String(path), uid, gid)
+	return uv_fs.chown(toPath(path), uid, gid)
 }
 
 export function lchown(path, uid, gid) {
-	return uv_fs.lchown(String(path), uid, gid)
+	return uv_fs.lchown(toPath(path), uid, gid)
 }
 
 export function rmdir(path) {
-	return uv_fs.rmdir(String(path))
+	return uv_fs.rmdir(toPath(path))
 }
 
 export function copyFile(src, dest, mode) {
-	return uv_fs.copyfile(String(src), String(dest), mode ?? 0)
+	return uv_fs.copyfile(toPath(src), toPath(dest), mode ?? 0)
 }
 
 export function mkdtemp(prefix) {
-	return uv_fs.mkdtemp(String(prefix) + 'XXXXXX')
+	return uv_fs.mkdtemp(toPath(prefix) + 'XXXXXX')
 }
 
 export function link(existingPath, newPath) {
-	return uv_fs.link(String(existingPath), String(newPath))
+	return uv_fs.link(toPath(existingPath), toPath(newPath))
 }
 
 /* ==== FileHandle ==== */
@@ -447,7 +448,7 @@ class FileHandle {
 }
 
 export async function open(path, flags = 'r', mode = 0o666) {
-	const fd = await uv_fs.open(String(path), flags, mode)
+	const fd = await uv_fs.open(toPath(path), flags, mode)
 	return new FileHandle(fd)
 }
 

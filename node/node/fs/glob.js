@@ -6,6 +6,7 @@ import { statSync } from 'qn:uv-fs'
 import picomatch from '../glob/index.js'
 // Use relative import to avoid circular dependency with node:fs
 import { readdirSync, lstatSync } from './index.js'
+import { toPath } from './_path.js'
 
 /**
  * Recursively match files against glob patterns.
@@ -17,7 +18,7 @@ import { readdirSync, lstatSync } from './index.js'
  * @returns {string[]|Dirent[]} Array of matching paths
  */
 export function globSync(pattern, options = {}) {
-	const cwd = options.cwd || process.cwd()
+	const cwd = options.cwd != null ? toPath(options.cwd) : process.cwd()
 	const exclude = options.exclude
 	const withFileTypes = options.withFileTypes || false
 

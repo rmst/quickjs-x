@@ -14,6 +14,7 @@ import {
 	S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFBLK, S_IFCHR, S_IFIFO, S_IFSOCK,
 	O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_EXCL,
 } from 'qn:uv-fs'
+import { toPath } from './_path.js'
 
 // Re-export glob functions from separate module
 import { globSync, glob } from './glob.js'
@@ -65,6 +66,7 @@ export class Dirent {
 
 
 export const writeFileSync = (path, data, options) => {
+	path = toPath(path)
 	options = typeof options === 'string' ? { encoding: options } : (options || {})
 
 	const flag = options.flag || 'w'
@@ -112,6 +114,7 @@ export const writeFileSync = (path, data, options) => {
 
 
 export const appendFileSync = (path, data, options) => {
+	path = toPath(path)
 	options = typeof options === 'string' ? { encoding: options } : (options || {})
 
 	if (options.encoding != null && options.encoding !== 'utf8' && options.encoding !== 'utf-8') {
@@ -145,6 +148,7 @@ export const appendFileSync = (path, data, options) => {
 
 
 export const readFileSync = (path, options) => {
+	path = toPath(path)
 	options = typeof options === 'string' ? { encoding: options } : (options || {})
 
 	const encoding = options.encoding
@@ -197,6 +201,7 @@ export const readdirSync = (path, options = {}) => {
 	if (options?.recursive) {
 		throw new Error("readdirSync: 'recursive' option is not supported")
 	}
+	path = toPath(path)
 	const withFileTypes = options?.withFileTypes || false
 
 	const entries = native_readdir(path)
@@ -217,6 +222,7 @@ export const readdirSync = (path, options = {}) => {
 }
 
 export const mkdirSync = (path, { mode = 0o777, recursive = false } = {}) => {
+	path = toPath(path)
 
 	if (!recursive) {
 		native_mkdir(path, mode)
@@ -291,17 +297,17 @@ function createStatsObject(statResult) {
 }
 
 export const statSync = (path) => {
-	return createStatsObject(native_stat(path))
+	return createStatsObject(native_stat(toPath(path)))
 }
 
 export const lstatSync = (path) => {
-	return createStatsObject(native_lstat(path))
+	return createStatsObject(native_lstat(toPath(path)))
 }
 
 
 export function existsSync(path) {
 	try {
-		native_stat(path)
+		native_stat(toPath(path))
 		return true
 	} catch {
 		return false
@@ -309,7 +315,7 @@ export function existsSync(path) {
 }
 
 export function openSync(path, flags, mode) {
-	return native_open(path, flags, mode)
+	return native_open(toPath(path), flags, mode)
 }
 
 export function closeSync(fd) {
@@ -317,30 +323,32 @@ export function closeSync(fd) {
 }
 
 export function unlinkSync(path) {
-	native_unlink(path)
+	native_unlink(toPath(path))
 }
 
 export function linkSync(existingPath, newPath) {
-	native_link(existingPath, newPath)
+	native_link(toPath(existingPath), toPath(newPath))
 }
 
 export function symlinkSync(target, path) {
-	native_symlink(target, path)
+	native_symlink(toPath(target), toPath(path))
 }
 
 export function renameSync(oldPath, newPath) {
-	native_rename(oldPath, newPath)
+	native_rename(toPath(oldPath), toPath(newPath))
 }
 
 export function chmodSync(path, mode) {
-	native_chmod(path, mode)
+	native_chmod(toPath(path), mode)
 }
 
 export function copyFileSync(src, dest, mode) {
-	native_copyfile(src, dest, mode ?? 0)
+	native_copyfile(toPath(src), toPath(dest), mode ?? 0)
 }
 
 export function cpSync(src, dest, options = {}) {
+	src = toPath(src)
+	dest = toPath(dest)
 	const { recursive = false, force = false } = options
 
 	const srcStat = native_lstat(src)
@@ -387,14 +395,15 @@ export function cpSync(src, dest, options = {}) {
 }
 
 export function realpathSync(path) {
-	return native_realpath(path)
+	return native_realpath(toPath(path))
 }
 
 export function readlinkSync(path) {
-	return native_readlink(path)
+	return native_readlink(toPath(path))
 }
 
 export function rmSync(path, options = {}) {
+	path = toPath(path)
 	const recursive = options.recursive || false
 	const force = options.force || false
 
@@ -450,27 +459,27 @@ export function rmSync(path, options = {}) {
 }
 
 export function mkdtempSync(prefix) {
-	return native_mkdtemp(prefix + 'XXXXXX')
+	return native_mkdtemp(toPath(prefix) + 'XXXXXX')
 }
 
 export function accessSync(path, mode) {
 	if (mode === undefined) mode = constants.F_OK
-	native_access(path, mode)
+	native_access(toPath(path), mode)
 }
 
 export function utimesSync(path, atime, mtime) {
 	// uv_fs_utime takes seconds (double), not milliseconds
 	const atimeSec = atime instanceof Date ? atime.getTime() / 1000 : (typeof atime === 'number' ? atime : atime)
 	const mtimeSec = mtime instanceof Date ? mtime.getTime() / 1000 : (typeof mtime === 'number' ? mtime : mtime)
-	native_utimes(path, atimeSec, mtimeSec)
+	native_utimes(toPath(path), atimeSec, mtimeSec)
 }
 
 export function chownSync(path, uid, gid) {
-	native_chown(path, uid, gid)
+	native_chown(toPath(path), uid, gid)
 }
 
 export function lchownSync(path, uid, gid) {
-	native_lchown(path, uid, gid)
+	native_lchown(toPath(path), uid, gid)
 }
 
 import { createReadStream, createWriteStream } from './streams.js'

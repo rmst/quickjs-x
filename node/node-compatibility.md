@@ -302,7 +302,7 @@ Notes: `Readable`/`Writable` are fd-backed; `Transform`/`Duplex` are generic and
 | `URL` (WHATWG) | ✅ | Full standard including `URL.canParse`, `URL.parse` |
 | `URLSearchParams` | ✅ | |
 | Legacy `url.parse`/`format`/`resolve` | ❌ | |
-| `fileURLToPath` / `pathToFileURL` | ❌ | |
+| `fileURLToPath` / `pathToFileURL` | ✅ | POSIX semantics; `pathToFileURL` rejects non-string input |
 | IDN (non-ASCII hostnames) | ❌ | Must use Punycode |
 
 ### node:assert

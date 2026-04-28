@@ -7,6 +7,7 @@ import {
 import { Buffer } from 'node:buffer'
 import { EventEmitter } from 'node:events'
 import { setTimeout as _setTimeout } from 'qn_vm'
+import { toPath } from './_path.js'
 
 /**
  * Readable stream for reading from a file path.
@@ -26,6 +27,7 @@ export class ReadStream extends EventEmitter {
 
 	constructor(path, options = {}) {
 		super()
+		path = toPath(path)
 		this.#path = path
 		this.#start = options.start ?? 0
 		this.#end = options.end ?? Infinity
@@ -129,6 +131,7 @@ export class WriteStream extends EventEmitter {
 
 	constructor(path, options = {}) {
 		super()
+		path = toPath(path)
 		this.#path = path
 		this.path = path
 

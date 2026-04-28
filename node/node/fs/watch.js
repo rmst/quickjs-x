@@ -12,6 +12,7 @@ import { EventEmitter } from 'node:events'
 import { Buffer } from 'node:buffer'
 import { fsWatch, UV_RENAME, UV_CHANGE } from 'qn_uv_fs_event'
 import { statSync, readdirSync, S_IFMT, S_IFDIR } from 'qn:uv-fs'
+import { toPath } from './_path.js'
 
 const PLATFORM = (() => {
 	try {
@@ -227,11 +228,7 @@ export function watch(filename, options, listener) {
 	if (typeof options === 'string') options = { encoding: options }
 	options = options || {}
 
-	if (typeof filename !== 'string') {
-		if (filename instanceof Buffer) filename = filename.toString('utf8')
-		else if (filename instanceof URL) filename = filename.pathname
-		else throw new TypeError('filename must be a string, Buffer, or URL')
-	}
+	filename = toPath(filename)
 
 	const watcher = new FSWatcher()
 	if (typeof listener === 'function') watcher.on('change', listener)
