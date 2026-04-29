@@ -317,22 +317,60 @@ describe('qn bundle', () => {
 		}
 	})
 
-	test('leaves user-written require() calls alone (not bundled)', async () => {
+	test('leaves bare `require` identifier references alone', async () => {
 		const dir = mktempdir()
 		try {
 			writeFileSync(join(dir, 'mod.js'), 'export const x = 99\n')
-			// A user-written require() call should NOT be rewritten — we only
-			// bundle specifiers that came from ESM import/export syntax.
+			// Bare `require` references (no call with literal arg) must not be
+			// rewritten — only literal `require("./path")` calls are.
 			writeFileSync(join(dir, 'main.js'),
 				'import { x } from "./mod.js"\n' +
 				'const fake = typeof require === "function"\n' +
 				'console.log(x, fake)\n')
 			await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
 			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
-			// Our Sucrase-emitted require for ./mod.js must be rewritten to a module id;
-			// the word "require" in user code stays as a plain identifier reference.
 			assert.match(bundle, /require\(["']m\d+["']\)/)
 			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), '99 true')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('rewrites literal require("./...") in hand-written CJS files', async () => {
+		const dir = mktempdir()
+		try {
+			// dep.js is plain CJS, mixed-case extension to verify .js → .js probe.
+			writeFileSync(join(dir, 'dep.js'), 'module.exports = { value: 42 }\n')
+			// main.cjs uses CJS require with no extension — resolver must probe.
+			writeFileSync(join(dir, 'main.cjs'),
+				'const dep = require("./dep")\n' +
+				'console.log(dep.value)\n')
+			await build({ entrypoints: [join(dir, 'main.cjs')], outdir: join(dir, 'dist') })
+			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
+			// The relative spec must be rewritten to a bundle-internal id.
+			assert.doesNotMatch(bundle, /require\(["']\.\/dep["']\)/)
+			assert.match(bundle, /require\(["']m\d+["']\)/)
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), '42')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('rewrites require() across .js files mixed with TS/ESM importers', async () => {
+		// Reproduces the katex case: a TS entry imports a CJS .js helper that
+		// itself uses `require("./...")` to pull a sibling .js. Without CJS-
+		// require rewriting, the sibling load fails at runtime.
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'leaf.js'), 'module.exports = "leaf-value"\n')
+			writeFileSync(join(dir, 'cjs-helper.js'),
+				'const leaf = require("./leaf")\n' +
+				'module.exports = { wrapped: leaf }\n')
+			writeFileSync(join(dir, 'main.ts'),
+				'import helper from "./cjs-helper.js"\n' +
+				'console.log((helper as any).wrapped)\n')
+			await build({ entrypoints: [join(dir, 'main.ts')], outdir: join(dir, 'dist') })
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'leaf-value')
 		} finally {
 			rmSync(dir, { recursive: true })
 		}
