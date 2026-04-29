@@ -225,6 +225,12 @@ function unquoteSpecifier(raw) {
 //     into require(newSpec)).
 //   - dynamic: the whole `import(...)` expression (replaced with a call
 //     into our runtime).
+//
+// Also collects literal `require("X")` calls so hand-written CJS (or TS
+// files mixing in CJS-style requires) get the same id rewrite. Member
+// access (`obj.require(...)`) and computed forms (`require(name)`) are
+// skipped — only top-level static literals are safe to rewrite without
+// runtime evaluation.
 function extractImports(code, ext) {
 	const isJSX = ext === ".jsx" || ext === ".tsx"
 	const isTS = ext === ".ts" || ext === ".tsx"
@@ -281,6 +287,25 @@ function extractImports(code, ext) {
 					break
 				}
 			}
+			continue
+		}
+
+		// CJS literal: `require("X")`. Skip member access (obj.require) and
+		// any non-string-literal argument shape.
+		if (t.type === TT.name
+			&& tokens[i + 1]?.type === TT.parenL
+			&& tokens[i + 2]?.type === TT.string
+			&& tokens[i + 3]?.type === TT.parenR
+			&& tokens[i - 1]?.type !== TT.dot
+			&& code.slice(t.start, t.end) === "require") {
+			const strTok = tokens[i + 2]
+			out.push({
+				kind: "static",
+				start: strTok.start,
+				end: strTok.end,
+				specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
+			})
+			i += 3
 		}
 	}
 	return out
@@ -473,19 +498,20 @@ function checkModuleSyntax(code, filePath) {
 }
 
 // Load a source file, enumerate its imports, and return both the raw text
-// and the import list. Returns null sections for non-ESM inputs.
+// and the import list. CJS files also get the import scan so literal
+// `require("…")` calls are rewritten to bundle-internal ids.
 function loadAndAnalyse(filePath) {
 	const source = readFileSync(filePath, "utf8")
 	const ext = extname(filePath)
 	if (ext === ".json") return { kind: "json", source, ext, imports: [] }
-	if (ext === ".cjs") return { kind: "cjs", source, ext, imports: [] }
 	let imports
 	try {
 		imports = extractImports(source, ext)
 	} catch (e) {
 		throw new Error(`failed to parse ${filePath}: ${e.message}`)
 	}
-	return { kind: "esm", source, ext, imports }
+	const kind = ext === ".cjs" ? "cjs" : "esm"
+	return { kind, source, ext, imports }
 }
 
 // Run Sucrase on the specifier-rewritten source. Sucrase's "imports"
