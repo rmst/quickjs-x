@@ -3,6 +3,22 @@ import assert from 'node:assert'
 import { writeFileSync } from 'node:fs'
 import { test, testQnOnly, $ } from './util.js'
 
+describe('dynamic import error handling', () => {
+	test('catching dynamic import of sync-throwing module exits cleanly', ({ bin, dir }) => {
+		writeFileSync(`${dir}/thrower.mjs`, `throw new Error("boom")\n`)
+		writeFileSync(`${dir}/main.mjs`, `
+			try {
+				await import('./thrower.mjs')
+			} catch (e) {
+				console.log('caught:' + e.message)
+			}
+			console.log('after')
+		`)
+		const out = $`${bin} ${dir}/main.mjs`
+		assert.strictEqual(out, 'caught:boom\nafter')
+	})
+})
+
 describe('node:module shim', () => {
 	test('stripTypeScriptTypes strips type annotations preserving positions', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
