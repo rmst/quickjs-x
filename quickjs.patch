@@ -22,20 +22,28 @@
 #      tried to import it.
 #      Example: "could not load module filename 'foo.js' (imported from 'main.js')"
 #
---- quickjs/quickjs.c	2026-02-21 11:28:24.635574389 +0000
-+++ bin/linux/quickjs/quickjs.c	2026-02-21 15:33:15.900924578 +0000
+#   4. Mark sync-module rejection as handled
+#      js_execute_sync_module() creates an internal promise via
+#      js_async_function_call() that gets discarded when the module body
+#      throws synchronously at top level. Without notifying the host
+#      rejection tracker, this surfaces as a spurious unhandled-rejection
+#      report (in addition to the real rejection on m->promise that
+#      JS_LoadModuleInternal correctly wires up via then-handlers).
+#
+--- quickjs/quickjs.c	2026-04-30 09:01:42.275867288 +0000
++++ bin/linux/quickjs/quickjs.c	2026-04-30 09:12:40.015948609 +0000
 @@ -809,6 +809,7 @@
      BOOL is_star; /* import_name = '*' is a valid import name, so need a flag */
      JSAtom import_name;
      int req_module_idx; /* in req_module_entries */
 +    int line_num; /* line number of the import statement */
  } JSImportEntry;
-
+ 
  typedef enum {
 @@ -15731,6 +15732,71 @@
      return JS_UNDEFINED;
  }
-
+ 
 +/* Get closure variables as a JS object { varName: { value, type }, ... }
 +   type is one of: "local", "arg", "ref", "global", "module" */
 +JSValue JS_GetClosureVars(JSContext *ctx, JSValueConst func_val)
@@ -162,7 +170,27 @@
                      goto fail;
                  }
                  if (res_me->local_name == JS_ATOM__star_) {
-@@ -31297,6 +31402,11 @@
+@@ -30648,6 +30753,7 @@
+ static int js_execute_async_module(JSContext *ctx, JSModuleDef *m);
+ static int js_execute_sync_module(JSContext *ctx, JSModuleDef *m,
+                                   JSValue *pvalue);
++static void js_promise_mark_handled(JSContext *ctx, JSValueConst promise);
+ #ifdef DUMP_MODULE_EXEC
+ static void js_dump_module(JSContext *ctx, const char *str, JSModuleDef *m)
+ {
+@@ -30808,6 +30914,11 @@
+             JS_FreeValue(ctx, promise);
+         } else if (state == JS_PROMISE_REJECTED) {
+             *pvalue = JS_PromiseResult(ctx, promise);
++            /* The rejection is propagated as an exception via *pvalue; this
++               internal promise never has a handler attached, so notify the
++               host rejection tracker that it has been handled to avoid a
++               spurious unhandled-rejection report. */
++            js_promise_mark_handled(ctx, promise);
+             JS_FreeValue(ctx, promise);
+             return -1;
+         } else {
+@@ -31297,6 +31408,11 @@
      mi->import_name = JS_DupAtom(ctx, import_name);
      mi->var_idx = var_idx;
      mi->is_star = is_star;
@@ -173,15 +201,42 @@
 +    }
      return 0;
  }
-
---- quickjs/quickjs.h	2026-02-21 11:28:24.637597145 +0000
-+++ bin/linux/quickjs/quickjs.h	2026-02-21 14:51:20.051543213 +0000
+ 
+@@ -52306,6 +52422,26 @@
+     JSValue promise_result;
+ } JSPromiseData;
+ 
++/* Mark a (possibly rejected) promise as handled and notify the host
++   rejection tracker, so a rejection that is consumed internally (e.g.
++   propagated via an exception channel) does not surface as an unhandled
++   rejection. No-op if the promise is not actually a promise or is
++   already handled / not rejected. */
++static void js_promise_mark_handled(JSContext *ctx, JSValueConst promise)
++{
++    JSPromiseData *s = JS_GetOpaque(promise, JS_CLASS_PROMISE);
++    if (!s || s->is_handled)
++        return;
++    if (s->promise_state == JS_PROMISE_REJECTED) {
++        JSRuntime *rt = ctx->rt;
++        if (rt->host_promise_rejection_tracker) {
++            rt->host_promise_rejection_tracker(ctx, promise, s->promise_result,
++                                               TRUE, rt->host_promise_rejection_tracker_opaque);
++        }
++    }
++    s->is_handled = TRUE;
++}
++
+ typedef struct JSPromiseFunctionDataResolved {
+     int ref_count;
+     BOOL already_resolved;
+--- quickjs/quickjs.h	2026-04-30 09:01:42.276624516 +0000
++++ bin/linux/quickjs/quickjs.h	2026-04-30 09:14:47.602568608 +0000
 @@ -759,6 +759,8 @@
  JS_BOOL JS_IsConstructor(JSContext* ctx, JSValueConst val);
  JS_BOOL JS_SetConstructorBit(JSContext *ctx, JSValueConst func_obj, JS_BOOL val);
-
+ 
 +JSValue JS_GetClosureVars(JSContext *ctx, JSValueConst func_val);
 +
  JSValue JS_NewArray(JSContext *ctx);
  int JS_IsArray(JSContext *ctx, JSValueConst val);
-
+ 
