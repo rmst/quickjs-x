@@ -376,6 +376,35 @@ describe('qn bundle', () => {
 		}
 	})
 
+	test('does not rewrite require() in ESM files', async () => {
+		// In a file with any ESM import/export syntax, `require()` is left
+		// alone (esbuild-style format split). This preserves the
+		// createRequire(import.meta.url) pattern: at runtime that `require` is
+		// a user-defined helper, not a bundle-time spec to resolve. Here we
+		// confirm the literal "./not-bundled" never reaches the resolver
+		// (no "unresolved" warning) and isn't materialised in the bundle.
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'mod.js'), 'export const x = 1\n')
+			writeFileSync(join(dir, 'main.js'),
+				'import { x } from "./mod.js"\n' +
+				// Dead-code path so the bundle runs cleanly even though the
+				// runtime require would fail; we're only asserting bundler
+				// behaviour, not call semantics.
+				'const tryIt = () => require("./not-bundled")\n' +
+				'console.log(x, typeof tryIt)\n')
+			const result = await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			assert.deepStrictEqual(result.logs, [])
+			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
+			// The literal must survive as the original spec — the resolver
+			// did not rewrite it to a bundle-internal m\d+ id.
+			assert.match(bundle, /require\(["']\.\/not-bundled["']\)/)
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), '1 function')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
 	test('ignores require() inside comments and strings', async () => {
 		const dir = mktempdir()
 		try {
