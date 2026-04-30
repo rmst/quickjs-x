@@ -226,16 +226,21 @@ function unquoteSpecifier(raw) {
 //   - dynamic: the whole `import(...)` expression (replaced with a call
 //     into our runtime).
 //
-// Also collects literal `require("X")` calls so hand-written CJS (or TS
-// files mixing in CJS-style requires) get the same id rewrite. Member
-// access (`obj.require(...)`) and computed forms (`require(name)`) are
-// skipped — only top-level static literals are safe to rewrite without
-// runtime evaluation.
+// In files with no ESM import/export syntax, also collects literal
+// `require("X")` calls so hand-written CJS modules get the same id rewrite.
+// Member access (`obj.require(...)`) and computed forms (`require(name)`)
+// are skipped — only top-level static literals are safe to rewrite without
+// runtime evaluation. Files with any ESM import/export are treated as ESM
+// and their `require()` calls are left alone (esbuild-style format split):
+// this preserves the `const require = createRequire(import.meta.url)`
+// pattern, where `require` is a user-defined runtime helper, not a
+// bundle-time spec.
 function extractImports(code, ext) {
 	const isJSX = ext === ".jsx" || ext === ".tsx"
 	const isTS = ext === ".ts" || ext === ".tsx"
 	const tokens = parse(code, isJSX, isTS, false).tokens
 	const out = []
+	let hasEsm = false
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i]
 
@@ -252,6 +257,7 @@ function extractImports(code, ext) {
 				})
 				i += 3
 			}
+			hasEsm = true
 			continue
 		}
 
@@ -265,11 +271,13 @@ function extractImports(code, ext) {
 				specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
 			})
 			i += 1
+			hasEsm = true
 			continue
 		}
 
 		// Static with from-clause: `import ... from "X"` or `export ... from "X"`
 		if (t.type === TT._import || t.type === TT._export) {
+			hasEsm = true
 			for (let j = i + 1; j < tokens.length; j++) {
 				const u = tokens[j]
 				if (u.type === TT.semi || u.type === TT.eof) break
@@ -287,27 +295,30 @@ function extractImports(code, ext) {
 					break
 				}
 			}
-			continue
-		}
-
-		// CJS literal: `require("X")`. Skip member access (obj.require) and
-		// any non-string-literal argument shape.
-		if (t.type === TT.name
-			&& tokens[i + 1]?.type === TT.parenL
-			&& tokens[i + 2]?.type === TT.string
-			&& tokens[i + 3]?.type === TT.parenR
-			&& tokens[i - 1]?.type !== TT.dot
-			&& code.slice(t.start, t.end) === "require") {
-			const strTok = tokens[i + 2]
-			out.push({
-				kind: "static",
-				start: strTok.start,
-				end: strTok.end,
-				specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
-			})
-			i += 3
 		}
 	}
+
+	if (!hasEsm) {
+		for (let i = 0; i < tokens.length; i++) {
+			const t = tokens[i]
+			if (t.type === TT.name
+				&& tokens[i + 1]?.type === TT.parenL
+				&& tokens[i + 2]?.type === TT.string
+				&& tokens[i + 3]?.type === TT.parenR
+				&& tokens[i - 1]?.type !== TT.dot
+				&& code.slice(t.start, t.end) === "require") {
+				const strTok = tokens[i + 2]
+				out.push({
+					kind: "static",
+					start: strTok.start,
+					end: strTok.end,
+					specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
+				})
+				i += 3
+			}
+		}
+	}
+
 	return out
 }
 
