@@ -312,6 +312,13 @@ static void sync_exit_cb(uv_process_t *h, int64_t exit_status, int term_signal) 
 	uv_close((uv_handle_t *)h, sync_close_cb);
 	if (ss->has_timer && !uv_is_closing((uv_handle_t *)&ss->timer))
 		uv_close((uv_handle_t *)&ss->timer, sync_close_cb);
+	/* Close pipes so the event loop exits even if grandchild processes
+	   (e.g. ssh ControlMaster, sleep spawned by sh -c) inherited the fds
+	   and are still alive. Same rationale as sync_timer_cb. */
+	if (ss->has_stdout && !uv_is_closing((uv_handle_t *)&ss->stdout_pipe))
+		uv_close((uv_handle_t *)&ss->stdout_pipe, sync_close_cb);
+	if (ss->has_stderr && !uv_is_closing((uv_handle_t *)&ss->stderr_pipe))
+		uv_close((uv_handle_t *)&ss->stderr_pipe, sync_close_cb);
 }
 
 static void sync_timer_cb(uv_timer_t *t) {

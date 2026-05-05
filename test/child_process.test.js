@@ -1100,4 +1100,24 @@ describe('node:child_process shim', () => {
 		const output = $`${bin} ${dir}/test.js`
 		assert.deepStrictEqual(JSON.parse(output), { isSessionLeader: true, grandchildKilled: true })
 	})
+
+	testQnOnly('execFileSync returns immediately when child backgrounds a long-lived grandchild', ({ bin, dir }) => {
+		// Regression: when the direct child exits but a grandchild inherits
+		// the stdout/stderr fds (e.g. ssh ControlMaster, sleep & in sh -c),
+		// execFileSync used to wait for the grandchild's pipe to EOF, hanging
+		// for the grandchild's lifetime even though the child was already done.
+		// Node.js exhibits the same (libuv default) behavior — qn diverges on
+		// purpose by closing the sync-spawn pipes in sync_exit_cb.
+		writeFileSync(`${dir}/test.js`, `
+			import { execFileSync } from 'node:child_process'
+			const start = Date.now()
+			const output = execFileSync('sh', ['-c', 'echo before-bg; sleep 30 & echo after-bg; exit 0'], { encoding: 'utf8' })
+			console.log(JSON.stringify({ output, elapsed: Date.now() - start }))
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		const result = JSON.parse(output)
+		assert.strictEqual(result.output, 'before-bg\nafter-bg\n', 'should capture output written before child exit')
+		assert.ok(result.elapsed < 5000, `should return promptly, took ${result.elapsed}ms`)
+	})
 })
