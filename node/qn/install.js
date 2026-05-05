@@ -296,13 +296,20 @@ async function installSourceDeps(sourceDeps, nodeModulesDir, projectDir) {
 			}
 		}
 
-		// Optional build escape hatch.
+		// Optional build escape hatch. Mirror runScript's PATH/QN_EXECPATH env
+		// handling so the script can invoke `qn` reliably (and via $QN_EXECPATH
+		// without ambiguity), even when no qn is on the host's PATH — required
+		// for sourceDependencies that bundle via `qn build` to work in
+		// content-addressed build sandboxes (jix.build, etc.).
 		if (src.build) {
 			if (typeof src.build !== "string") {
 				throw new Error(`sourceDependencies["${name}"]: 'build' must be a string`)
 			}
 			console.log(`  building ${name}...`)
-			execFileSync("sh", ["-c", src.build], { cwd: dest, stdio: "inherit" })
+			let env = { ...process.env }
+			env.PATH = dirname(process.execPath) + ":" + (env.PATH || "")
+			env.QN_EXECPATH = process.execPath
+			execFileSync("sh", ["-c", src.build], { cwd: dest, env, stdio: "inherit" })
 		}
 	}
 }
