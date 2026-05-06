@@ -729,7 +729,7 @@ function emitBundle({ entryId, modules, externals, format, entryExports }) {
 	chunks.push(`}\n`)
 
 	for (const [id, { filePath, code }] of modules) {
-		chunks.push(`\n// ${filePath}\n__qn_modules[${JSON.stringify(id)}] = function(exports, require, module) {\n${code}\n};\n`)
+		chunks.push(`\n__qn_modules[${JSON.stringify(id)}] = function(exports, require, module) {\n${code}\n};\n`)
 	}
 	if (entryExports && (entryExports.names.length > 0 || entryExports.hasDefault)) {
 		chunks.push(`\nvar __qn_entry = __qn_require(${JSON.stringify(entryId)});\n`)
