@@ -103,6 +103,11 @@ describe('Worker', () => {
 		assert.strictEqual(result.textEncoderWorks, true, 'TextEncoder works')
 		assert.strictEqual(result.hasPerformanceNow, true, 'performance.now available')
 		assert.strictEqual(result.hasProcess, true, 'process available')
+		assert.strictEqual(result.hasCrypto, true, 'globalThis.crypto available')
+		assert.strictEqual(result.hasGetRandomValues, true, 'crypto.getRandomValues available')
+		assert.strictEqual(result.hasSubtleDigest, true, 'crypto.subtle.digest available')
+		assert.strictEqual(result.getRandomValuesWorks, true, 'crypto.getRandomValues works')
+		assert.strictEqual(result.subtleDigestWorks, true, 'crypto.subtle.digest works')
 		w.terminate()
 	})
 
