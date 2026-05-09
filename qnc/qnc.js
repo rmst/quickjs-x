@@ -74,6 +74,7 @@ const DEFAULT_MODULES = [
 	"qn:init", "qn:repl",
 	"node:fs", "node:fs/promises", "node:process", "node:child_process",
 	"node:crypto", "node:path", "node:events",
+	"node:readline", "node:readline/promises",
 	"node:stream", "node:stream/promises",
 	"node:buffer", "node:url", "node:abort",
 	"node:fetch", "node:fetch/Headers", "node:fetch/Response",
@@ -83,7 +84,7 @@ const DEFAULT_MODULES = [
 	// Stubs for unimplemented node:* modules (throw NodeCompatibilityError on import)
 	"node:async_hooks", "node:cluster", "node:diagnostics_channel", "node:dns",
 	"node:domain", "node:http2", "node:https", "node:inspector",
-	"node:perf_hooks", "node:punycode", "node:querystring", "node:readline",
+	"node:perf_hooks", "node:punycode", "node:querystring",
 	"node:repl", "node:string_decoder", "node:tty",
 	"node:v8", "node:vm", "node:wasi", "node:worker_threads",
 	"qn:crypto", "qn:tls", "qn:fetch", "qn:introspect", "qn:http", "qn:pty",
