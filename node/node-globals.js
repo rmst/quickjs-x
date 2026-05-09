@@ -225,6 +225,80 @@ globalThis.TextDecoder = class TextDecoder {
 	}
 }
 
+// Web Crypto API (W3C spec; subset compatible with browsers and Node.js)
+import { hashInit as _hashInit, hashUpdate as _hashUpdate, hashOut as _hashOut } from 'qn:crypto'
+import { randomFill as _randomFill } from 'qn_vm'
+
+const _SUBTLE_HASH_ALGOS = {
+	'sha-1': 'sha1',
+	'sha-256': 'sha256',
+	'sha-384': 'sha384',
+	'sha-512': 'sha512',
+}
+
+const _INT_TYPED_ARRAYS = [
+	Int8Array, Uint8Array, Uint8ClampedArray,
+	Int16Array, Uint16Array,
+	Int32Array, Uint32Array,
+	BigInt64Array, BigUint64Array,
+]
+
+const _bufferSourceToBytes = (data) => {
+	if (data instanceof ArrayBuffer) return new Uint8Array(data)
+	if (ArrayBuffer.isView(data))
+		return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+	throw new TypeError('Expected BufferSource (ArrayBuffer, TypedArray, or DataView)')
+}
+
+class SubtleCrypto {
+	async digest(algorithm, data) {
+		const name = (typeof algorithm === 'string' ? algorithm : algorithm?.name ?? '').toLowerCase()
+		const internal = _SUBTLE_HASH_ALGOS[name]
+		if (!internal)
+			throw new DOMException(`Unrecognized algorithm name: ${name}`, 'NotSupportedError')
+		const bytes = _bufferSourceToBytes(data)
+		const ctx = _hashInit(internal)
+		_hashUpdate(ctx, bytes)
+		return _hashOut(ctx)
+	}
+}
+
+const _subtleCrypto = new SubtleCrypto()
+
+class Crypto {
+	get subtle() { return _subtleCrypto }
+
+	getRandomValues(typedArray) {
+		if (typedArray == null || !ArrayBuffer.isView(typedArray) ||
+				!_INT_TYPED_ARRAYS.some(c => typedArray instanceof c))
+			throw new DOMException(
+				'crypto.getRandomValues: input must be an integer-typed array',
+				'TypeMismatchError')
+		if (typedArray.byteLength > 65536)
+			throw new DOMException(
+				'crypto.getRandomValues: byteLength exceeds 65536',
+				'QuotaExceededError')
+		if (typedArray.byteLength === 0) return typedArray
+		const bytes = _randomFill(typedArray.byteLength)
+		new Uint8Array(typedArray.buffer, typedArray.byteOffset, typedArray.byteLength).set(bytes)
+		return typedArray
+	}
+
+	randomUUID() {
+		const bytes = _randomFill(16)
+		bytes[6] = (bytes[6] & 0x0f) | 0x40
+		bytes[8] = (bytes[8] & 0x3f) | 0x80
+		const hex = new Array(16)
+		for (let i = 0; i < 16; i++) hex[i] = bytes[i].toString(16).padStart(2, '0')
+		const h = hex.join('')
+		return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`
+	}
+}
+
+globalThis.Crypto = Crypto
+globalThis.SubtleCrypto = SubtleCrypto
+globalThis.crypto = new Crypto()
+
 // URL and URLSearchParams (Web standard, also in Node.js)
 import { URL, URLSearchParams } from "node:url"
 globalThis.URL = URL
