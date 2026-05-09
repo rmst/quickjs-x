@@ -182,6 +182,31 @@ describe('fetch()', () => {
 		}
 	})
 
+	test('POST with URLSearchParams body', async ({ bin, dir }) => {
+		const { port, close } = await startServer()
+		try {
+			writeFileSync(`${dir}/test.js`, `
+				const res = await fetch('http://127.0.0.1:${port}/post', {
+					method: 'POST',
+					body: new URLSearchParams({ grant_type: 'authorization_code', code: 'abc' }),
+				})
+				const data = await res.json()
+				console.log(JSON.stringify({
+					body: data.data,
+					contentType: data.headers['content-type'],
+					contentLength: data.headers['content-length'],
+				}))
+			`)
+			const output = await execAsync(bin, [`${dir}/test.js`])
+			const result = JSON.parse(output)
+			assert.strictEqual(result.body, 'grant_type=authorization_code&code=abc')
+			assert.match(result.contentType, /^application\/x-www-form-urlencoded/)
+			assert.strictEqual(result.contentLength, String(result.body.length))
+		} finally {
+			close()
+		}
+	})
+
 	test('custom headers are sent', async ({ bin, dir }) => {
 		const { port, close } = await startServer()
 		try {

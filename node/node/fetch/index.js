@@ -553,6 +553,12 @@ export async function fetch(input, init = {}) {
 		} else if (init.body instanceof ArrayBuffer) {
 			bodyBytes = new Uint8Array(init.body)
 			headers.set('content-length', String(bodyBytes.byteLength))
+		} else if (init.body instanceof URLSearchParams) {
+			bodyBytes = new TextEncoder().encode(init.body.toString())
+			if (!headers.has('content-type')) {
+				headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8')
+			}
+			headers.set('content-length', String(bodyBytes.byteLength))
 		} else if (typeof init.body?.[Symbol.asyncIterator] === 'function'
 			|| typeof init.body?.[Symbol.iterator] === 'function') {
 			bodyIter = init.body
