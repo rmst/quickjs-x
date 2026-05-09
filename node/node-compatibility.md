@@ -118,7 +118,7 @@ CommonJS modules are partially supported. ESM files can import `.cjs` files and 
 | `performance.now()` | ✅ | |
 | `DOMException` | ✅ | |
 | `Error.captureStackTrace` | ⚠️ | Shim (no-op) |
-| `structuredClone` | ❌ | |
+| `structuredClone` | ⚠️ | No transferables (ArrayBuffer ownership transfer) |
 | `crypto` (Web Crypto) | ⚠️ | `getRandomValues`, `randomUUID`, `subtle.digest` (SHA-1/256/384/512). No `subtle.importKey` / `sign` / `verify` / `encrypt` / `decrypt` |
 | `Blob` / `File` / `FormData` | ❌ | |
 | `EventTarget` / `Event` | ❌ | Only minimal version in AbortSignal |

@@ -125,6 +125,148 @@ globalThis.queueMicrotask = (fn) => _setTimeout(fn, 0)
 import { performance } from "node:perf_hooks"
 globalThis.performance = performance
 
+// structuredClone (WHATWG HTML, in Node.js 17+)
+// Pure-JS implementation. Transferables are not supported.
+const _TYPED_ARRAY_TAGS = {
+	'[object Int8Array]': Int8Array,
+	'[object Uint8Array]': Uint8Array,
+	'[object Uint8ClampedArray]': Uint8ClampedArray,
+	'[object Int16Array]': Int16Array,
+	'[object Uint16Array]': Uint16Array,
+	'[object Int32Array]': Int32Array,
+	'[object Uint32Array]': Uint32Array,
+	'[object Float32Array]': Float32Array,
+	'[object Float64Array]': Float64Array,
+	'[object BigInt64Array]': BigInt64Array,
+	'[object BigUint64Array]': BigUint64Array,
+}
+
+const _ERROR_CTORS = {
+	Error, EvalError, RangeError, ReferenceError,
+	SyntaxError, TypeError, URIError,
+}
+
+const _dataCloneError = (msg) => new DOMException(msg, 'DataCloneError')
+
+const _structuredClone = (value, seen) => {
+	if (typeof value === 'symbol')
+		throw _dataCloneError(`${value.toString()} could not be cloned.`)
+
+	// Primitives (incl. null, undefined, bigint)
+	if (value === null || typeof value !== 'object' && typeof value !== 'function')
+		return value
+
+	if (typeof value === 'function')
+		throw _dataCloneError(`${value.constructor?.name ?? 'Function'} could not be cloned.`)
+
+	if (seen.has(value)) return seen.get(value)
+
+	const tag = Object.prototype.toString.call(value)
+
+	switch (tag) {
+		case '[object Date]': {
+			const out = new Date(value.getTime())
+			seen.set(value, out)
+			return out
+		}
+		case '[object RegExp]': {
+			// Per spec: clone source and flags, but not lastIndex
+			const out = new RegExp(value.source, value.flags)
+			seen.set(value, out)
+			return out
+		}
+		case '[object ArrayBuffer]': {
+			const out = value.slice(0)
+			seen.set(value, out)
+			return out
+		}
+		case '[object SharedArrayBuffer]': {
+			// SAB is shared, not copied
+			seen.set(value, value)
+			return value
+		}
+		case '[object DataView]': {
+			const buf = _structuredClone(value.buffer, seen)
+			const out = new DataView(buf, value.byteOffset, value.byteLength)
+			seen.set(value, out)
+			return out
+		}
+		case '[object Map]': {
+			const out = new Map()
+			seen.set(value, out)
+			for (const [k, v] of value)
+				out.set(_structuredClone(k, seen), _structuredClone(v, seen))
+			return out
+		}
+		case '[object Set]': {
+			const out = new Set()
+			seen.set(value, out)
+			for (const v of value)
+				out.add(_structuredClone(v, seen))
+			return out
+		}
+		case '[object Array]': {
+			const out = new Array(value.length)
+			seen.set(value, out)
+			for (const k of Object.keys(value))
+				out[k] = _structuredClone(value[k], seen)
+			return out
+		}
+		case '[object Boolean]':
+		case '[object Number]':
+		case '[object String]': {
+			// Boxed primitives
+			const out = new value.constructor(value.valueOf())
+			seen.set(value, out)
+			return out
+		}
+		case '[object Error]': {
+			const Ctor = _ERROR_CTORS[value.name] ?? Error
+			const out = new Ctor(value.message)
+			if (value.stack !== undefined) out.stack = value.stack
+			if ('cause' in value)
+				Object.defineProperty(out, 'cause', {
+					value: _structuredClone(value.cause, seen),
+					writable: true, configurable: true,
+				})
+			seen.set(value, out)
+			return out
+		}
+	}
+
+	// Typed arrays — detected by Symbol.toStringTag, so subclasses (e.g. Buffer)
+	// are cloned as their standard typed-array form, matching Node.js.
+	const TaCtor = _TYPED_ARRAY_TAGS[tag]
+	if (TaCtor) {
+		const buf = _structuredClone(value.buffer, seen)
+		const out = new TaCtor(buf, value.byteOffset, value.length)
+		seen.set(value, out)
+		return out
+	}
+
+	// Reject things we know are not cloneable
+	if (value instanceof WeakMap || value instanceof WeakSet ||
+			value instanceof Promise)
+		throw _dataCloneError(`${value.constructor.name} could not be cloned.`)
+
+	// Ordinary objects (incl. class instances) — cloned as plain objects with
+	// only enumerable own string-keyed properties. The class's prototype is
+	// dropped, but a null prototype is preserved (matches Node).
+	const out = Object.getPrototypeOf(value) === null ? Object.create(null) : {}
+	seen.set(value, out)
+	for (const k of Object.keys(value))
+		out[k] = _structuredClone(value[k], seen)
+	return out
+}
+
+globalThis.structuredClone = function structuredClone(value, options) {
+	if (arguments.length < 1)
+		throw new TypeError("structuredClone requires at least 1 argument")
+	if (options?.transfer !== undefined && options.transfer.length > 0)
+		throw _dataCloneError("structuredClone: transferables are not supported")
+	return _structuredClone(value, new Map())
+}
+
 // Base64 encoding/decoding
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 const BASE64_LOOKUP = new Uint8Array(128)
