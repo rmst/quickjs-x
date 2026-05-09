@@ -216,6 +216,52 @@ describe('qn --test runner', () => {
 		}
 	})
 
+	test('done-callback style: success', async ({ bin, dir }) => {
+		writeFileSync(join(dir, 'cb.test.js'), `
+			import { test } from 'node:test'
+			test('cb-pass', (t, done) => {
+				setTimeout(() => done(), 5)
+			})
+		`)
+		const output = await execAsync(bin, ['--test', './cb.test.js'], { cwd: dir })
+		assert.match(output, /pass 1/)
+		assert.match(output, /fail 0/)
+	})
+
+	test('done-callback style: failure via done(err)', async ({ bin, dir }) => {
+		writeFileSync(join(dir, 'cb-fail.test.js'), `
+			import { test } from 'node:test'
+			test('cb-fail', (t, done) => {
+				setTimeout(() => done(new Error('boom')), 5)
+			})
+		`)
+		try {
+			await execAsync(bin, ['--test', './cb-fail.test.js'], { cwd: dir })
+			assert.fail('expected non-zero exit')
+		} catch (err) {
+			assert.strictEqual(err.code, 1)
+			assert.match(err.stdout, /fail 1/)
+			assert.match(err.stdout, /boom/)
+		}
+	})
+
+	test('done-callback style: double-call fails the test', async ({ bin, dir }) => {
+		writeFileSync(join(dir, 'cb-double.test.js'), `
+			import { test } from 'node:test'
+			test('cb-double', (t, done) => {
+				done()
+				done()
+			})
+		`)
+		try {
+			await execAsync(bin, ['--test', './cb-double.test.js'], { cwd: dir })
+			assert.fail('expected non-zero exit')
+		} catch (err) {
+			assert.strictEqual(err.code, 1)
+			assert.match(err.stdout, /callback invoked multiple times/)
+		}
+	})
+
 	// qn-only: Node.js doesn't support negative glob patterns for --test
 	testQnOnly('negative glob pattern excludes files', async ({ bin, dir }) => {
 		writeFileSync(join(dir, 'a.test.js'), `

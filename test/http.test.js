@@ -1,7 +1,7 @@
 import { describe } from 'node:test'
 import assert from 'node:assert'
 import { writeFileSync } from 'node:fs'
-import { testQnOnly, execAsync } from './util.js'
+import { test, testQnOnly, execAsync } from './util.js'
 
 describe('node:http Server', () => {
 	testQnOnly('basic GET request', ({ bin, dir }) => {
@@ -148,6 +148,42 @@ describe('node:http Server', () => {
 		`)
 		return execAsync(bin, [`${dir}/test.js`]).then(output => {
 			assert.equal(output, 'received:hello body')
+		})
+	})
+
+	test('req.on(data) emits Buffer chunks (string coercion utf-8 decodes)', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+			import { Buffer } from 'node:buffer'
+
+			const server = http.createServer((req, res) => {
+				let body = ''
+				let firstChunkIsBuffer = null
+				req.on('data', (chunk) => {
+					if (firstChunkIsBuffer === null) firstChunkIsBuffer = Buffer.isBuffer(chunk)
+					body += chunk // implicit string coercion should utf-8 decode
+				})
+				req.on('end', () => {
+					res.writeHead(200, { 'Content-Type': 'application/json' })
+					res.end(JSON.stringify({ body, firstChunkIsBuffer }))
+				})
+			})
+
+			server.listen(0, '127.0.0.1', async () => {
+				const addr = server.address()
+				const r = await fetch('http://127.0.0.1:' + addr.port + '/', {
+					method: 'POST',
+					body: '{"hello":"world"}',
+				})
+				console.log(await r.text())
+				server.close()
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.deepStrictEqual(JSON.parse(output), {
+				body: '{"hello":"world"}',
+				firstChunkIsBuffer: true,
+			})
 		})
 	})
 

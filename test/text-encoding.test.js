@@ -159,6 +159,60 @@ describe('TextDecoder', () => {
 	})
 })
 
+describe('TextDecoder stream mode', () => {
+	test('buffers incomplete 3-byte sequence across chunks', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			const dec = new TextDecoder()
+			// '€' = 0xE2 0x82 0xAC, split between chunks
+			const a = dec.decode(new Uint8Array([0xE2, 0x82]), { stream: true })
+			const b = dec.decode(new Uint8Array([0xAC]), { stream: true })
+			const c = dec.decode()
+			console.log(JSON.stringify({ a, b, c, combined: a + b + c }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), {
+			a: '', b: '€', c: '', combined: '€'
+		})
+	})
+
+	test('buffers incomplete 4-byte emoji across chunks', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			const dec = new TextDecoder()
+			// '😀' = 0xF0 0x9F 0x98 0x80
+			let s = ''
+			s += dec.decode(new Uint8Array([0xF0]), { stream: true })
+			s += dec.decode(new Uint8Array([0x9F, 0x98]), { stream: true })
+			s += dec.decode(new Uint8Array([0x80]), { stream: true })
+			s += dec.decode()
+			console.log(JSON.stringify({ s }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { s: '😀' })
+	})
+
+	test('emits complete codepoints when chunk ends on boundary', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			const dec = new TextDecoder()
+			const r = dec.decode(new Uint8Array([0xE2, 0x82, 0xAC]), { stream: true })
+			console.log(JSON.stringify({ r }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { r: '€' })
+	})
+
+	test('strips BOM only on first emitted chunk', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			const dec = new TextDecoder()
+			const a = dec.decode(new Uint8Array([0xEF, 0xBB, 0xBF, 0x68]), { stream: true })
+			const b = dec.decode(new Uint8Array([0x69]), { stream: true })
+			const c = dec.decode()
+			console.log(JSON.stringify({ combined: a + b + c }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { combined: 'hi' })
+	})
+})
+
 describe('TextDecoder BOM handling', () => {
 	test('strips BOM by default', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `

@@ -32,7 +32,8 @@ if (!Error.captureStackTrace) {
 }
 
 // Node.js compatibility error for unsupported features
-export { NodeCompatibilityError } from "./node/errors.js"
+import { NodeCompatibilityError } from "./node/errors.js"
+export { NodeCompatibilityError }
 
 // Timer globals — implementation lives in node:timers, globalized here
 import * as timers from "node:timers"
@@ -327,6 +328,26 @@ globalThis.TextEncoder = class TextEncoder {
 	}
 }
 
+// Number of trailing bytes that form an incomplete UTF-8 sequence
+// (for stream-mode buffering). Returns 0 if the input ends on a complete
+// codepoint or with an invalid start byte (which the decoder will replace).
+function _utf8IncompleteTail(bytes) {
+	const n = bytes.length
+	for (let i = 0; i < 4 && i < n; i++) {
+		const b = bytes[n - 1 - i]
+		if ((b & 0x80) === 0) return 0 // ASCII: complete
+		if ((b & 0xC0) === 0x80) continue // continuation: keep walking
+		let needed
+		if ((b & 0xE0) === 0xC0) needed = 2
+		else if ((b & 0xF0) === 0xE0) needed = 3
+		else if ((b & 0xF8) === 0xF0) needed = 4
+		else return 0 // invalid start byte, let decoder handle
+		const have = i + 1
+		return have < needed ? have : 0
+	}
+	return 0
+}
+
 globalThis.TextDecoder = class TextDecoder {
 	constructor(encoding = 'utf-8', options = {}) {
 		const normalizedEncoding = encoding.toLowerCase().replace('-', '')
@@ -339,31 +360,140 @@ globalThis.TextDecoder = class TextDecoder {
 		this.encoding = 'utf-8'
 		this.fatal = false
 		this.ignoreBOM = !!options.ignoreBOM
+		this._pending = null // buffered incomplete UTF-8 bytes from prior stream call
+		this._bomSeen = false // tracks BOM stripping across stream calls
 	}
 
 	decode(input, options = {}) {
-		if (options.stream) {
-			throw new NodeCompatibilityError('TextDecoder: stream option is not supported')
-		}
+		const stream = !!options.stream
+		let bytes
 		if (input === undefined) {
-			return ''
-		}
-		let buffer
-		if (input instanceof ArrayBuffer) {
-			buffer = input
+			bytes = new Uint8Array(0)
+		} else if (input instanceof ArrayBuffer) {
+			bytes = new Uint8Array(input)
 		} else if (ArrayBuffer.isView(input)) {
-			buffer = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength)
+			bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
 		} else {
 			throw new TypeError('TextDecoder.decode: input must be ArrayBuffer or ArrayBufferView')
 		}
-		let result = std._decodeUtf8(buffer)
-		// Strip BOM if present (default behavior per WHATWG spec)
-		if (!this.ignoreBOM && result.length > 0 && result.charCodeAt(0) === 0xFEFF) {
-			result = result.slice(1)
+		// Prepend any tail buffered from the previous stream call
+		if (this._pending && this._pending.length > 0) {
+			const merged = new Uint8Array(this._pending.length + bytes.length)
+			merged.set(this._pending, 0)
+			merged.set(bytes, this._pending.length)
+			bytes = merged
+			this._pending = null
+		}
+		let tail = 0
+		if (stream) {
+			tail = _utf8IncompleteTail(bytes)
+			if (tail > 0) {
+				this._pending = bytes.slice(bytes.length - tail)
+			}
+		}
+		const decodeLen = bytes.length - tail
+		if (decodeLen === 0) return ''
+		// std._decodeUtf8 takes an ArrayBuffer; slice to the prefix without the tail
+		const buf = bytes.buffer.slice(
+			bytes.byteOffset,
+			bytes.byteOffset + decodeLen
+		)
+		let result = std._decodeUtf8(buf)
+		// Strip leading BOM (only on the very first emitted character, per WHATWG)
+		if (!this.ignoreBOM && !this._bomSeen && result.length > 0) {
+			if (result.charCodeAt(0) === 0xFEFF) {
+				result = result.slice(1)
+			}
+			this._bomSeen = true
+		}
+		if (!stream) {
+			// Reset state on flush
+			this._bomSeen = false
 		}
 		return result
 	}
 }
+
+// Intl.Segmenter (minimal polyfill, grapheme granularity only).
+// QuickJS does not ship full ICU/Intl. This stitches base codepoints with
+// trailing combining marks, variation selectors, and ZWJ-joined sequences,
+// plus regional-indicator pairs (flags). It is NOT a full UAX #29 segmenter
+// — sufficient for terminal-width measurement and codepoint iteration, but
+// not for locale-aware text editing.
+const _COMBINING_MARK_RE = /\p{M}/u
+function _isExtending(cp) {
+	if (cp === 0x200D || cp === 0x200C) return true // ZWJ / ZWNJ
+	if (cp >= 0xFE00 && cp <= 0xFE0F) return true // Variation Selectors
+	if (cp >= 0xE0100 && cp <= 0xE01EF) return true // VS Supplement
+	return _COMBINING_MARK_RE.test(String.fromCodePoint(cp))
+}
+function* _segmentGraphemes(str) {
+	let i = 0
+	while (i < str.length) {
+		const start = i
+		let cp = str.codePointAt(i)
+		i += cp > 0xFFFF ? 2 : 1
+		// Regional indicator pair (country flag): consume one more if present
+		if (cp >= 0x1F1E6 && cp <= 0x1F1FF && i < str.length) {
+			const next = str.codePointAt(i)
+			if (next >= 0x1F1E6 && next <= 0x1F1FF) {
+				i += 2
+			}
+		}
+		let prev = cp
+		while (i < str.length) {
+			const next = str.codePointAt(i)
+			if (_isExtending(next)) {
+				i += next > 0xFFFF ? 2 : 1
+				prev = next
+				continue
+			}
+			// ZWJ joins the following codepoint into the same cluster
+			if (prev === 0x200D) {
+				i += next > 0xFFFF ? 2 : 1
+				prev = next
+				continue
+			}
+			break
+		}
+		yield { segment: str.slice(start, i), index: start, input: str }
+	}
+}
+
+class _IntlSegmenter {
+	constructor(locales, options = {}) {
+		const granularity = options.granularity || 'grapheme'
+		if (granularity !== 'grapheme') {
+			throw new NodeCompatibilityError(
+				`Intl.Segmenter: granularity '${granularity}' not supported (only 'grapheme' in qn)`
+			)
+		}
+		this._granularity = granularity
+	}
+	resolvedOptions() {
+		return { locale: 'en-US', granularity: this._granularity }
+	}
+	segment(input) {
+		const str = String(input)
+		return {
+			[Symbol.iterator]() { return _segmentGraphemes(str) },
+			containing(index) {
+				index = Number(index) || 0
+				let last = null
+				for (const seg of _segmentGraphemes(str)) {
+					if (seg.index > index) break
+					last = seg
+				}
+				return last
+			},
+		}
+	}
+}
+
+if (typeof globalThis.Intl === 'undefined') {
+	globalThis.Intl = {}
+}
+globalThis.Intl.Segmenter = _IntlSegmenter
 
 // Web Crypto API (W3C spec; subset compatible with browsers and Node.js)
 import { hashInit as _hashInit, hashUpdate as _hashUpdate, hashOut as _hashOut } from 'qn:crypto'
