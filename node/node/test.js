@@ -159,7 +159,39 @@ async function runTest(test, parentSuite, indentLevel = 0) {
 
 	if (errors.length === 0) {
 		try {
-			await fn(context)
+			if (fn.length >= 2) {
+				// Callback-style: fn(t, done). Test completes when done() is
+				// called. done(err) signals failure. Matches Node.js behavior.
+				await new Promise((resolve, reject) => {
+					let called = false
+					let pendingErr = null
+					const done = (err) => {
+						if (called) {
+							// Calling done() twice is a test failure. Throw so
+							// the error propagates out of user code; the outer
+							// catch will reject the promise.
+							throw new Error('callback invoked multiple times')
+						}
+						called = true
+						pendingErr = err ?? null
+						// Defer settling so a synchronous double-call still
+						// gets caught by the outer try/catch below.
+						queueMicrotask(() => {
+							pendingErr ? reject(pendingErr) : resolve()
+						})
+					}
+					try {
+						const ret = fn(context, done)
+						if (ret && typeof ret.then === 'function') {
+							reject(new Error('passed a callback but also returned a Promise'))
+						}
+					} catch (e) {
+						reject(e)
+					}
+				})
+			} else {
+				await fn(context)
+			}
 		} catch (error) {
 			errors.push(error)
 		}

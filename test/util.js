@@ -72,6 +72,7 @@ export const execAsync = (cmd, args, opts = {}) => {
 			if (code !== 0) {
 				const err = new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`)
 				err.code = code
+				err.stdout = stdout
 				err.stderr = stderr
 				reject(err)
 			} else {
