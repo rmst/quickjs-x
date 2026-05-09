@@ -358,6 +358,16 @@ Notes: `Readable`/`Writable` are fd-backed; `Transform`/`Duplex` are generic and
 | `execPath` | ✅ | Via `uv_exepath()` — absolute, symlink-resolved |
 | `execArgv` | ❌ | |
 
+### node:tty
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `isatty(fd)` | ✅ | Via `uv_guess_handle` |
+| `ReadStream` (`process.stdin` for TTYs) | ✅ | `setRawMode`, `isTTY`, `isRaw`, `columns`, `rows`, `pause` / `resume` / `'data'` / `'end'`, `setEncoding('utf8')`, `ref` / `unref`, `destroy` |
+| `WriteStream` (`process.stdout` / `process.stderr`) | ✅ | `write`, `getWindowSize`, `columns`, `rows`, `getColorDepth`, `hasColors` |
+
+`process.stdin` auto-resumes when a `'data'` listener is attached and pauses when the last one is removed. `setRawMode(false)` returns `this` on a non-TTY (matching Node.js). The terminal is automatically reset to its previous mode on runtime shutdown via `uv_tty_reset_mode`.
+
 ### node:os
 
 | Function | Status | Notes |
@@ -426,7 +436,7 @@ Notes:
 
 The following modules are not implemented. Importing them throws a `NodeCompatibilityError` with a descriptive message.
 
-`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:perf_hooks`, `node:punycode`, `node:querystring`, `node:readline`, `node:repl`, `node:string_decoder`, `node:tls`, `node:tty`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
+`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:perf_hooks`, `node:punycode`, `node:querystring`, `node:readline`, `node:repl`, `node:string_decoder`, `node:tls`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
 
 ---
 

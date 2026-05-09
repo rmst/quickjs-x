@@ -22,7 +22,6 @@ const STUB_MODULES = [
 	"node:readline",
 	"node:repl",
 	"node:string_decoder",
-	"node:tty",
 	"node:v8",
 	"node:vm",
 	"node:wasi",

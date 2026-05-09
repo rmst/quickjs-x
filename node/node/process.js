@@ -1,56 +1,42 @@
 import * as std from 'std';
 import { signal as uvSignal, signals as signalMap } from 'qn_uv_signals';
 import {
-	isatty as _isatty, ttyGetWinSize as _ttyGetWinSize,
 	getCwd as _getCwd, chdir as _chdir,
 	kill as _kill, getPid as _getPid, getPlatform as _getPlatform,
 	getArch as _getArch, getExecPath as _getExecPath,
 	getuid as _getuid, getgid as _getgid, getgroups as _getgroups,
 	setuid as _setuid, setgid as _setgid, setgroups as _setgroups,
 } from 'qn_vm';
+import { ReadStream, WriteStream } from 'node:tty';
 
-// Create stream-like objects for stdin, stdout, stderr
-const createStream = (fd) => {
-  const stream = {
-    fd,
-    get isTTY() {
-      return _isatty(fd);
-    },
-    get columns() {
-      if (!_isatty(fd)) return undefined
-      const size = _ttyGetWinSize(fd)
-      return size ? size[0] : undefined
-    },
-    get rows() {
-      if (!_isatty(fd)) return undefined
-      const size = _ttyGetWinSize(fd)
-      return size ? size[1] : undefined
-    },
+/* stdout/stderr go through std.out/std.err for synchronous writes — that
+ * matches Node.js semantics for process.stdout (synchronous when fd is a
+ * file or pipe, blocking on TTY). The tty.WriteStream's libuv-async write
+ * isn't appropriate for the canonical "console.log" path because it makes
+ * output appear after subsequent JS work runs. */
+const createWriteStream = (fd) => {
+  const file = fd === 1 ? std.out : std.err;
+  const stream = new WriteStream(fd);
+  stream.write = function(data, encoding, callback) {
+    if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = 'utf8';
+    }
+    try {
+      if (typeof data === 'string') {
+        file.puts(data);
+      } else {
+        /* Uint8Array / Buffer — convert via decode (utf8) for puts */
+        file.puts(new TextDecoder().decode(data));
+      }
+      file.flush();
+      if (callback) queueMicrotask(callback);
+      return true;
+    } catch (err) {
+      if (callback) callback(err);
+      return false;
+    }
   };
-
-  // Add write method for stdout and stderr
-  if (fd === 1 || fd === 2) {
-    stream.write = function(data, encoding, callback) {
-      // Handle optional encoding parameter
-      if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = 'utf8';
-      }
-      encoding = encoding || 'utf8';
-
-      try {
-        const file = fd === 1 ? std.out : std.err;
-        file.puts(String(data));
-        file.flush();
-        if (callback) callback();
-        return true;
-      } catch (err) {
-        if (callback) callback(err);
-        return false;
-      }
-    };
-  }
-
   return stream;
 };
 
@@ -126,10 +112,11 @@ const process = {
     return true
   },
 
-  // Standard streams
-  stdin: createStream(0),
-  stdout: createStream(1),
-  stderr: createStream(2),
+  // Standard streams. ReadStream/WriteStream constructors are cheap; the
+  // libuv handle is allocated lazily on first I/O / setRawMode.
+  stdin: new ReadStream(0),
+  stdout: createWriteStream(1),
+  stderr: createWriteStream(2),
 
   // Process ID
   get pid() {
