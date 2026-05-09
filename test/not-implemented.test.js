@@ -16,7 +16,6 @@ const STUB_MODULES = [
 	"node:http2",
 	"node:https",
 	"node:inspector",
-	"node:perf_hooks",
 	"node:punycode",
 	"node:querystring",
 	"node:repl",

@@ -6,8 +6,33 @@ import {
 	getArch as _getArch, getExecPath as _getExecPath,
 	getuid as _getuid, getgid as _getgid, getgroups as _getgroups,
 	setuid as _setuid, setgid as _setgid, setgroups as _setgroups,
+	hrtimeBigInt as _hrtimeBigInt,
 } from 'qn_vm';
 import { ReadStream, WriteStream } from 'node:tty';
+
+const NS_PER_SEC = 1_000_000_000n
+
+// process.hrtime([prev]) → [seconds, nanoseconds]
+// process.hrtime.bigint() → bigint nanoseconds
+const hrtime = (prev) => {
+	const ns = _hrtimeBigInt()
+	const sec = Number(ns / NS_PER_SEC)
+	const nsec = Number(ns % NS_PER_SEC)
+	if (prev !== undefined) {
+		if (!Array.isArray(prev) || prev.length !== 2) {
+			throw new TypeError('process.hrtime() argument must be an Array tuple')
+		}
+		let dsec = sec - prev[0]
+		let dnsec = nsec - prev[1]
+		if (dnsec < 0) {
+			dsec -= 1
+			dnsec += 1e9
+		}
+		return [dsec, dnsec]
+	}
+	return [sec, nsec]
+}
+hrtime.bigint = () => _hrtimeBigInt()
 
 /* stdout/stderr go through std.out/std.err for synchronous writes — that
  * matches Node.js semantics for process.stdout (synchronous when fd is a
@@ -122,6 +147,9 @@ const process = {
   get pid() {
     return _getPid();
   },
+
+  // High-resolution time
+  hrtime,
 
   // User and group IDs
   getuid: () => _getuid(),
@@ -243,4 +271,5 @@ export default process;
 
 // Also export individual properties for named imports
 export const { argv, execPath, exit, exitCode, cwd, chdir, kill, pid, getuid, getgid, getgroups, setuid, setgid, setgroups, platform, arch, version, versions, stdin, stdout, stderr } = process;
+export { hrtime };
 export const env = process.env;  // Export env separately to preserve the Proxy
