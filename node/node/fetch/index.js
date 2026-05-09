@@ -11,6 +11,7 @@ import {
 } from 'qn/uv-stream'
 import { getaddrinfo as _getaddrinfo } from 'qn_uv_dns'
 import * as tls from 'qn:tls'
+import { getPin } from 'qn:fetch'
 import { existsSync } from 'node:fs'
 import { Headers } from './Headers.js'
 import { Request } from './Request.js'
@@ -226,8 +227,23 @@ function isRedirectStatus(status) {
  */
 const _pool = new Map()  // origin → [{conn, timer}]
 
-function poolKey(protocol, host, port) {
-	return `${protocol}//${host}:${port}`
+function _pinSig(pin) {
+	if (!pin) return ''
+	const c = pin.certSha256
+		? (Array.isArray(pin.certSha256) ? pin.certSha256 : [pin.certSha256])
+		: []
+	const s = pin.spkiSha256
+		? (Array.isArray(pin.spkiSha256) ? pin.spkiSha256 : [pin.spkiSha256])
+		: []
+	const t = pin.trustOnlyPin ? 'T' : ''
+	return c.slice().sort().join(',') + '|' + s.slice().sort().join(',') + '|' + t
+}
+
+function poolKey(protocol, host, port, pin) {
+	const sig = _pinSig(pin)
+	return sig
+		? `${protocol}//${host}:${port}#${sig}`
+		: `${protocol}//${host}:${port}`
 }
 
 function poolGet(key) {
@@ -386,13 +402,13 @@ function buildRequest(method, path, host, port, headers, isDefaultPort) {
  * Create a reusable connection object for an origin.
  * Returns { send(reqBytes, bodyBytes, bodyIter, signal) → reader, destroy() }
  */
-async function createConnection(handle, host, isHttps, signal) {
+async function createConnection(handle, host, isHttps, signal, pin) {
 	const transport = isHttps ? tls.streamTransport(handle) : plainTransport(handle)
 	let tlsConn = null
 
 	if (isHttps) {
 		ensureCACerts()
-		tlsConn = tls.connect(host)
+		tlsConn = tls.connect(host, pin ? { pin } : undefined)
 		try {
 			await tls.handshake(tlsConn, transport, signal)
 		} catch (e) {
@@ -464,7 +480,7 @@ async function createConnection(handle, host, isHttps, signal) {
 }
 
 
-async function newConnection(host, port, isHttps, signal) {
+async function newConnection(host, port, isHttps, signal, pin) {
 	let handle
 	try {
 		handle = await tcpConnect(host, port, signal)
@@ -473,7 +489,7 @@ async function newConnection(host, port, isHttps, signal) {
 		throw new TypeError(`fetch failed: ${e.message}`)
 	}
 	try {
-		return await createConnection(handle, host, isHttps, signal)
+		return await createConnection(handle, host, isHttps, signal, pin)
 	} catch (e) {
 		if (signal?.aborted) throw signal.reason
 		throw e instanceof TypeError ? e : new TypeError(`fetch failed: ${e.message}`)
@@ -560,7 +576,8 @@ export async function fetch(input, init = {}) {
 		const port = url.port ? parseInt(url.port, 10) : defaultPort
 		const path = (url.pathname || '/') + (url.search || '')
 		const isDefaultPort = port === defaultPort
-		const key = poolKey(url.protocol, host, port)
+		const pin = isHttps ? getPin(host) : null
+		const key = poolKey(url.protocol, host, port, pin)
 
 		const reqStr = buildRequest(method, path, host, port, headers, isDefaultPort)
 		const reqBytes = new TextEncoder().encode(reqStr)
@@ -570,7 +587,7 @@ export async function fetch(input, init = {}) {
 		let conn = poolGet(key)
 		let fromPool = !!conn
 		if (!conn) {
-			conn = await newConnection(host, port, isHttps, signal)
+			conn = await newConnection(host, port, isHttps, signal, pin)
 		}
 
 		let reader
@@ -579,7 +596,7 @@ export async function fetch(input, init = {}) {
 		} catch (e) {
 			if (fromPool && !signal?.aborted) {
 				// Pooled connection was stale — retry with fresh connection
-				conn = await newConnection(host, port, isHttps, signal)
+				conn = await newConnection(host, port, isHttps, signal, pin)
 				reader = await conn.send(reqBytes, bodyBytes, bodyIter, signal)
 			} else {
 				conn.destroy()
@@ -593,7 +610,7 @@ export async function fetch(input, init = {}) {
 			if (!head && fromPool) {
 				// Pooled connection died — retry with a fresh one
 				conn.destroy()
-				conn = await newConnection(host, port, isHttps, signal)
+				conn = await newConnection(host, port, isHttps, signal, pin)
 				fromPool = false
 				reader = await conn.send(reqBytes, bodyBytes, bodyIter, signal)
 				head = await readResponseHead(reader, 64 * 1024)

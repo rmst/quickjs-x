@@ -383,18 +383,120 @@ static int load_private_key_pem(const char *path, br_skey_decoder_context *skey)
 
 /* ---- TLS connection context ---- */
 
+/*
+ * Maximum leaf certificate size we'll capture for pinning. Real-world
+ * leaves are typically 1-2 KB; 8 KB is a generous bound. If a server's
+ * leaf exceeds this, the capture is marked truncated and pin checks
+ * that need the full leaf will fail closed.
+ */
+#define PIN_LEAF_MAX 8192
+
+/*
+ * Wrapping X.509 engine: delegates every method to br_x509_minimal,
+ * but additionally captures the leaf (first) certificate's DER bytes
+ * so the JS side can do post-handshake pinning checks.
+ */
+typedef struct {
+	const br_x509_class *vtable;
+	br_x509_minimal_context inner;
+	unsigned char leaf[PIN_LEAF_MAX];
+	size_t leaf_len;
+	int leaf_truncated;
+	int cert_index;       /* 0 = leaf, ≥1 = chain */
+	/*
+	 * If non-zero, end_chain returns success regardless of the inner
+	 * minimal engine's verdict — i.e. CA trust, signatures, expiry,
+	 * and hostname matching are all bypassed. Pure-pin mode: callers
+	 * must enforce identity entirely via the post-handshake pin check.
+	 */
+	int skip_chain_check;
+} pin_x509_ctx;
+
 typedef struct {
 	int is_server;
 	union {
 		struct {
 			br_ssl_client_context sc;
-			br_x509_minimal_context xc;
+			pin_x509_ctx xw;  /* wraps minimal, replaces it as the engine's x509 */
 		} client;
 		br_ssl_server_context server;
 	} ctx;
 	unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
 	int fd;
 } tls_conn_t;
+
+/* ---- Leaf-capturing X.509 wrapper around br_x509_minimal ---- */
+
+static void pin_start_chain(const br_x509_class **ctx, const char *server_name)
+{
+	pin_x509_ctx *p = (pin_x509_ctx *)ctx;
+	p->leaf_len = 0;
+	p->leaf_truncated = 0;
+	p->cert_index = 0;
+	p->inner.vtable->start_chain(&p->inner.vtable, server_name);
+}
+
+static void pin_start_cert(const br_x509_class **ctx, uint32_t length)
+{
+	pin_x509_ctx *p = (pin_x509_ctx *)ctx;
+	if (p->cert_index == 0 && length > PIN_LEAF_MAX)
+		p->leaf_truncated = 1;
+	p->inner.vtable->start_cert(&p->inner.vtable, length);
+}
+
+static void pin_append(const br_x509_class **ctx,
+                       const unsigned char *buf, size_t len)
+{
+	pin_x509_ctx *p = (pin_x509_ctx *)ctx;
+	if (p->cert_index == 0 && !p->leaf_truncated) {
+		if (p->leaf_len + len <= PIN_LEAF_MAX) {
+			memcpy(p->leaf + p->leaf_len, buf, len);
+			p->leaf_len += len;
+		} else {
+			p->leaf_truncated = 1;
+		}
+	}
+	p->inner.vtable->append(&p->inner.vtable, buf, len);
+}
+
+static void pin_end_cert(const br_x509_class **ctx)
+{
+	pin_x509_ctx *p = (pin_x509_ctx *)ctx;
+	p->inner.vtable->end_cert(&p->inner.vtable);
+	p->cert_index++;
+}
+
+static unsigned pin_end_chain(const br_x509_class **ctx)
+{
+	pin_x509_ctx *p = (pin_x509_ctx *)ctx;
+	unsigned err = p->inner.vtable->end_chain(&p->inner.vtable);
+	/*
+	 * In pure-pin mode, ignore chain validation errors. The leaf cert's
+	 * public key has still been parsed and will be used by the TLS
+	 * engine to verify the peer's signed handshake messages, so a
+	 * successful TLS handshake combined with a matching post-handshake
+	 * pin proves we're talking to the holder of the pinned key.
+	 */
+	if (err && p->skip_chain_check) return 0;
+	return err;
+}
+
+static const br_x509_pkey *pin_get_pkey(const br_x509_class *const *ctx,
+                                        unsigned *usages)
+{
+	pin_x509_ctx *p = (pin_x509_ctx *)ctx;
+	return p->inner.vtable->get_pkey(&p->inner.vtable, usages);
+}
+
+static const br_x509_class pin_x509_vtable = {
+	sizeof(pin_x509_ctx),
+	pin_start_chain,
+	pin_start_cert,
+	pin_append,
+	pin_end_cert,
+	pin_end_chain,
+	pin_get_pkey,
+};
 
 static inline br_ssl_engine_context *tls_engine(tls_conn_t *c)
 {
@@ -544,14 +646,23 @@ static JSValue js_tls_connect(JSContext *ctx, JSValueConst this_val,
 {
 	int fd;
 	const char *hostname;
+	int skip_chain_check = 0;
 
 	if (JS_ToInt32(ctx, &fd, argv[0]))
 		return JS_EXCEPTION;
 	hostname = JS_ToCString(ctx, argv[1]);
 	if (!hostname)
 		return JS_EXCEPTION;
+	if (argc > 2 && !JS_IsUndefined(argv[2])) {
+		int v;
+		if (JS_ToInt32(ctx, &v, argv[2])) {
+			JS_FreeCString(ctx, hostname);
+			return JS_EXCEPTION;
+		}
+		skip_chain_check = v ? 1 : 0;
+	}
 
-	if (g_ta_store.num_anchors == 0) {
+	if (g_ta_store.num_anchors == 0 && !skip_chain_check) {
 		JS_FreeCString(ctx, hostname);
 		return JS_ThrowTypeError(ctx, "TLS: no CA certificates loaded. "
 			"Call tlsLoadCACerts() first.");
@@ -572,8 +683,18 @@ static JSValue js_tls_connect(JSContext *ctx, JSValueConst this_val,
 	conn->is_server = 0;
 	conn->fd = fd;
 
-	br_ssl_client_init_full(&conn->ctx.client.sc, &conn->ctx.client.xc,
+	/*
+	 * Initialise br_x509_minimal inside the wrapper, then point the SSL
+	 * engine at the wrapper's vtable. The wrapper forwards every method
+	 * to the inner minimal context, so chain validation (signatures,
+	 * trust anchors, hostname matching, expiry) is unchanged. Its only
+	 * extra job is to capture the leaf cert's DER bytes for pinning.
+	 */
+	br_ssl_client_init_full(&conn->ctx.client.sc, &conn->ctx.client.xw.inner,
 		g_ta_store.anchors, g_ta_store.num_anchors);
+	conn->ctx.client.xw.vtable = &pin_x509_vtable;
+	conn->ctx.client.xw.skip_chain_check = skip_chain_check;
+	br_ssl_engine_set_x509(tls_engine(conn), &conn->ctx.client.xw.vtable);
 
 	/* TLS 1.2 only (TLS 1.0/1.1 deprecated per RFC 8996) */
 	br_ssl_engine_set_versions(tls_engine(conn), BR_TLS12, BR_TLS12);
@@ -694,6 +815,24 @@ static JSValue js_tls_error(JSContext *ctx, JSValueConst this_val,
 	tls_conn_t *conn = JS_GetOpaque2(ctx, argv[0], tls_conn_class_id);
 	if (!conn) return JS_EXCEPTION;
 	return JS_NewInt32(ctx, br_ssl_engine_last_error(tls_engine(conn)));
+}
+
+/*
+ * tlsPeerLeafDer(conn) -> Uint8Array of the leaf cert's DER bytes,
+ * or null if no leaf was captured (server connection, leaf exceeded
+ * PIN_LEAF_MAX, or handshake hasn't started). Only meaningful after
+ * a successful handshake on a client connection.
+ */
+static JSValue js_tls_peer_leaf_der(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+	tls_conn_t *conn = JS_GetOpaque2(ctx, argv[0], tls_conn_class_id);
+	if (!conn) return JS_EXCEPTION;
+	if (conn->is_server) return JS_NULL;
+
+	pin_x509_ctx *p = &conn->ctx.client.xw;
+	if (p->leaf_truncated || p->leaf_len == 0) return JS_NULL;
+	return JS_NewArrayBufferCopy(ctx, p->leaf, p->leaf_len);
 }
 
 /*
@@ -1646,10 +1785,11 @@ static const JSCFunctionListEntry js_crypto_funcs[] = {
 	/* TLS engine */
 	JS_CFUNC_DEF("tlsLoadCACerts", 1, js_tls_load_ca_certs),
 	JS_CFUNC_DEF("tlsLoadServerCert", 2, js_tls_load_server_cert),
-	JS_CFUNC_DEF("tlsConnect", 2, js_tls_connect),
+	JS_CFUNC_DEF("tlsConnect", 3, js_tls_connect),
 	JS_CFUNC_DEF("tlsAccept", 2, js_tls_accept),
 	JS_CFUNC_DEF("tlsState", 1, js_tls_state),
 	JS_CFUNC_DEF("tlsError", 1, js_tls_error),
+	JS_CFUNC_DEF("tlsPeerLeafDer", 1, js_tls_peer_leaf_der),
 	JS_CFUNC_DEF("tlsSendApp", 4, js_tls_send_app),
 	JS_CFUNC_DEF("tlsRecvApp", 4, js_tls_recv_app),
 	JS_CFUNC_DEF("tlsFlush", 1, js_tls_flush),

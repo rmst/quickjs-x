@@ -449,6 +449,7 @@ Available as `import WebSocket from "ws"` (vendored ws v8.19.0), not as a global
 |--------|-------------|
 | `qn:crypto` | BearSSL-backed crypto primitives (used by `node:crypto`) |
 | `qn:tls` | Low-level TLS I/O (see below) |
+| `qn:fetch` | Pin registry for HTTPS `fetch` (see below) |
 | `qn:http` | High-level HTTP server (`serve()` API) |
 | `qn:worker` | Worker class (re-exported as global `Worker`) |
 | `qn:introspect` | Closure introspection and function serialization |
@@ -460,8 +461,20 @@ Available as `import WebSocket from "ws"` (vendored ws v8.19.0), not as a global
 |-----|--------|-------|
 | `connect` / `accept` / `handshake` / `read` / `writeAll` | ✅ | Low-level BearSSL transport API |
 | System CA certificate loading | ✅ | |
+| `connect(host, { pin })` / `verifyPin` / `peerLeafDer` / `extractSpki` | ✅ | Certificate / SPKI pinning (qn-only, not in `node:tls`) |
 | `TLSSocket` class | ❌ | No Node.js-style socket API |
 | `tls.createServer` / `tls.connect` | ❌ | |
 | SNI / ALPN / client certs | ❌ | |
 
 Notes: Low-level transport API, not the Node.js socket API. Used internally by `fetch` for HTTPS.
+
+### qn:fetch
+
+| API | Description |
+|-----|-------------|
+| `pin(host, { certSha256?, spkiSha256?, trustOnlyPin? })` | Register a pin for a hostname (or `'*'` wildcard, or URL). Hashes are base64 SHA-256; either field may be a string or array. Both fields together require both to match. `trustOnlyPin: true` bypasses BearSSL chain validation entirely (CA trust, signatures, expiry, hostname matching) so the pin is the sole identity check — required for self-signed certs. |
+| `unpin(host)` | Remove a previously registered pin. |
+| `clearPins()` | Remove all pins. |
+| `getPin(host)` | Look up the pin (exact match first, then `'*'`). Used internally by HTTPS `fetch`. |
+
+Pinned fetches verify the leaf certificate after BearSSL's CA chain validation succeeds. A mismatch fails the handshake. Connection pool entries are keyed by pin signature, so changing a pin between fetches forces a fresh connection.

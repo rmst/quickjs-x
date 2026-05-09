@@ -86,7 +86,7 @@ const DEFAULT_MODULES = [
 	"node:perf_hooks", "node:punycode", "node:querystring", "node:readline",
 	"node:repl", "node:string_decoder", "node:tty",
 	"node:v8", "node:vm", "node:wasi", "node:worker_threads",
-	"qn:crypto", "qn:tls", "qn:introspect", "qn:http", "qn:pty",
+	"qn:crypto", "qn:tls", "qn:fetch", "qn:introspect", "qn:http", "qn:pty",
 	"qn:version-info", "qn:sucrase", "qn:worker", "qn:cjs", "qn:process", "qn:proxy", "qn:proxy/cli",
 	"qn:install", "qn:run", "qn:bundle", "qn:watch",
 	"qx", "ws",
