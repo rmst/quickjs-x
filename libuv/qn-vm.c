@@ -656,6 +656,24 @@ static JSValue js_vm_isatty(JSContext *ctx, JSValueConst this_val,
 	return JS_NewBool(ctx, uv_guess_handle(fd) == UV_TTY);
 }
 
+/* JS: guessHandle(fd) → "tty"|"pipe"|"file"|"tcp"|"udp"|"unknown" */
+static JSValue js_vm_guessHandle(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv) {
+	int fd;
+	if (JS_ToInt32(ctx, &fd, argv[0]))
+		return JS_EXCEPTION;
+	const char *name;
+	switch (uv_guess_handle(fd)) {
+	case UV_TTY:        name = "tty"; break;
+	case UV_NAMED_PIPE: name = "pipe"; break;
+	case UV_FILE:       name = "file"; break;
+	case UV_TCP:        name = "tcp"; break;
+	case UV_UDP:        name = "udp"; break;
+	default:            name = "unknown"; break;
+	}
+	return JS_NewString(ctx, name);
+}
+
 #if !defined(_WIN32)
 /* JS: ttyGetWinSize(fd) → [cols, rows] or null */
 static JSValue js_vm_ttyGetWinSize(JSContext *ctx, JSValueConst this_val,
@@ -960,6 +978,7 @@ static const JSCFunctionListEntry vm_funcs[] = {
 	QN_CFUNC_MAGIC_DEF("setWriteHandler", 2, js_vm_setRWHandler, 1),
 	QN_CFUNC_DEF("randomFill", 1, js_vm_randomFill),
 	QN_CFUNC_DEF("isatty", 1, js_vm_isatty),
+	QN_CFUNC_DEF("guessHandle", 1, js_vm_guessHandle),
 #if !defined(_WIN32)
 	QN_CFUNC_DEF("ttyGetWinSize", 1, js_vm_ttyGetWinSize),
 	QN_CFUNC_DEF("ttySetRaw", 1, js_vm_ttySetRaw),

@@ -4,7 +4,7 @@ Qn is built from ~24K LOC of own code plus four vendored C dependencies and one 
 
 ## Own Code (~24K LOC)
 
-**Node.js compatibility** (`node/node/`) — ~12.6K LOC JS. Shims for `node:fs`, `node:net`, `node:dgram`, `node:http`, `node:child_process`, `node:stream`, `node:crypto`, `node:path`, `node:events`, `node:url`, `node:os`, `node:buffer`, `node:assert`, `node:test`, `node:sqlite`, `node:module`, etc.
+**Node.js compatibility** (`node/node/`) — ~12.6K LOC JS. Shims for `node:fs`, `node:net`, `node:dgram`, `node:http`, `node:child_process`, `node:stream`, `node:crypto`, `node:path`, `node:events`, `node:url`, `node:os`, `node:buffer`, `node:assert`, `node:test`, `node:sqlite`, `node:module`, `node:tty`, etc.
 
 **Bootstrap and REPL** (`node/bootstrap.js`, `node/node-globals.js`, `node/qn/init.js`, `node/repl.js`) — ~1.9K LOC JS. Startup, global setup, interactive shell. `qn:init` is the shared pre-user-code init (node-globals install, .ts/CJS source transform, tsconfig-paths resolver fallback); imported from `node/bootstrap.js` as well as from the qnc-generated main and worker contexts so all three paths start identical.
 
@@ -16,7 +16,7 @@ Qn is built from ~24K LOC of own code plus four vendored C dependencies and one 
 - `qn-vm.c` (761) — event loop ownership, timers, fd polling, microtask draining, promise rejection tracking (all state is `_Thread_local` for worker thread safety)
 - `qn-worker.c` (674) — Web Worker implementation via `uv_socketpair` + `uv_pipe_t` + `uv_thread_create`. Each worker gets its own JSRuntime, JSContext, and libuv event loop. Messages use 4-byte length-prefixed `JS_WriteObject2`/`JS_ReadObject` serialization.
 - `qn-uv-fs.c` (903) — async/sync filesystem operations via `uv_fs_*`
-- `qn-uv-stream.c` (634) — unified TCP/Pipe/TTY stream abstraction
+- `qn-uv-stream.c` (709) — unified TCP/Pipe/TTY stream abstraction (TTY ops back `node:tty`)
 - `qn-uv-dgram.c` (310) — UDP datagram sockets via `uv_udp_t`
 - `qn-uv-process.c` (698) — child process spawning via `uv_spawn`
 - `qn-uv-pty.c` (480) — pseudo-terminal support via `forkpty` + libuv async I/O

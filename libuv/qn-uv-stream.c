@@ -298,6 +298,12 @@ enum {
 	STREAM_SET_ON_SHUTDOWN,
 	STREAM_PIPE_NEW,
 	STREAM_PIPE_OPEN,
+	STREAM_TTY_NEW,
+	STREAM_TTY_SET_MODE,
+	STREAM_TTY_GET_WINSIZE,
+	STREAM_REF,
+	STREAM_UNREF,
+	STREAM_TTY_RESET_MODE,
 };
 
 /* ---- Single dispatch ---- */
@@ -565,6 +571,66 @@ static JSValue js_uv_stream_op(JSContext *ctx, JSValueConst this_val,
 		return JS_UNDEFINED;
 	}
 
+	case STREAM_TTY_NEW: {
+		int32_t fd;
+		if (JS_ToInt32(ctx, &fd, args[0])) return JS_EXCEPTION;
+		int readable = JS_ToBool(ctx, args[1]);
+		QNStream *s = qn_stream_new(ctx);
+		if (!s) return JS_ThrowOutOfMemory(ctx);
+		int r = uv_tty_init(loop, &s->h.tty, fd, readable);
+		if (r < 0) {
+			stream_unlink(s);
+			free(s);
+			return qn_throw_errno(ctx, r);
+		}
+		return qn_stream_wrap(ctx, s);
+	}
+
+	case STREAM_TTY_SET_MODE: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		int32_t mode;
+		if (JS_ToInt32(ctx, &mode, args[1])) return JS_EXCEPTION;
+		int r = uv_tty_set_mode(&s->h.tty, (uv_tty_mode_t)mode);
+		if (r < 0) return qn_throw_errno(ctx, r);
+		return JS_UNDEFINED;
+	}
+
+	case STREAM_TTY_GET_WINSIZE: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		int width, height;
+		int r = uv_tty_get_winsize(&s->h.tty, &width, &height);
+		if (r < 0) return qn_throw_errno(ctx, r);
+		JSValue arr = JS_NewArray(ctx);
+		JS_DefinePropertyValueUint32(ctx, arr, 0,
+			JS_NewInt32(ctx, width), JS_PROP_C_W_E);
+		JS_DefinePropertyValueUint32(ctx, arr, 1,
+			JS_NewInt32(ctx, height), JS_PROP_C_W_E);
+		return arr;
+	}
+
+	case STREAM_REF: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		uv_ref(&s->h.handle);
+		return JS_UNDEFINED;
+	}
+
+	case STREAM_UNREF: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		uv_unref(&s->h.handle);
+		return JS_UNDEFINED;
+	}
+
+	case STREAM_TTY_RESET_MODE: {
+		/* Restore the terminal to the mode it had before any uv_tty_set_mode
+		 * call. Global, takes no handle. */
+		uv_tty_reset_mode();
+		return JS_UNDEFINED;
+	}
+
 	default:
 		return JS_ThrowRangeError(ctx, "unknown stream opcode: %d", op);
 	}
@@ -595,9 +661,19 @@ static const JSCFunctionListEntry js_uv_stream_funcs[] = {
 	QN_CONST2("SET_ON_SHUTDOWN", STREAM_SET_ON_SHUTDOWN),
 	QN_CONST2("PIPE_NEW", STREAM_PIPE_NEW),
 	QN_CONST2("PIPE_OPEN", STREAM_PIPE_OPEN),
+	QN_CONST2("TTY_NEW", STREAM_TTY_NEW),
+	QN_CONST2("TTY_SET_MODE", STREAM_TTY_SET_MODE),
+	QN_CONST2("TTY_GET_WINSIZE", STREAM_TTY_GET_WINSIZE),
+	QN_CONST2("REF", STREAM_REF),
+	QN_CONST2("UNREF", STREAM_UNREF),
+	QN_CONST2("TTY_RESET_MODE", STREAM_TTY_RESET_MODE),
 	/* Address family constants */
 	QN_CONST(AF_INET),
 	QN_CONST(AF_INET6),
+	/* TTY mode constants (uv_tty_mode_t) */
+	QN_CONST2("TTY_MODE_NORMAL", UV_TTY_MODE_NORMAL),
+	QN_CONST2("TTY_MODE_RAW", UV_TTY_MODE_RAW),
+	QN_CONST2("TTY_MODE_IO", UV_TTY_MODE_IO),
 };
 
 static int js_uv_stream_init(JSContext *ctx, JSModuleDef *m) {
@@ -626,4 +702,8 @@ void qn_stream_cleanup(JSRuntime *rt) {
 			s->this_val = JS_UNDEFINED;
 		}
 	}
+	/* Restore the terminal to its original mode if any TTY was put into
+	 * raw mode. Safe to call unconditionally — it's a no-op when no mode
+	 * was set. Without this a crashing program leaves the terminal raw. */
+	uv_tty_reset_mode();
 }
