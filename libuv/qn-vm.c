@@ -746,6 +746,13 @@ static JSValue js_vm_hrtime(JSContext *ctx, JSValueConst this_val,
 	return JS_NewFloat64(ctx, (double)uv_hrtime() / 1e6);
 }
 
+/* JS: hrtimeBigInt() → bigint (nanoseconds, high resolution)
+ * Returns the raw uv_hrtime() value as a BigInt for full precision. */
+static JSValue js_vm_hrtimeBigInt(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+	return JS_NewBigUint64(ctx, uv_hrtime());
+}
+
 /* JS: getPlatform() → string ("linux", "darwin", etc.) */
 static JSValue js_vm_getPlatform(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -969,6 +976,7 @@ static const JSCFunctionListEntry vm_funcs[] = {
 	QN_CFUNC_DEF("kill", 2, js_vm_kill),
 	QN_CFUNC_DEF("getPid", 0, js_vm_getPid),
 	QN_CFUNC_DEF("hrtime", 0, js_vm_hrtime),
+	QN_CFUNC_DEF("hrtimeBigInt", 0, js_vm_hrtimeBigInt),
 	QN_CFUNC_DEF("getPlatform", 0, js_vm_getPlatform),
 	QN_CFUNC_DEF("getArch", 0, js_vm_getArch),
 	QN_CFUNC_DEF("getExecPath", 0, js_vm_getExecPath),

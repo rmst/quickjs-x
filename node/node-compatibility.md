@@ -353,10 +353,24 @@ Notes: `Readable`/`Writable` are fd-backed; `Transform`/`Duplex` are generic and
 | `on` / `once` / `off` / `removeListener` (`exit`, signals) | ✅ | Via `uv_signal_t` |
 | `nextTick` | ✅ | Via `queueMicrotask` |
 | `getuid` / `getgid` | ✅ | |
-| `hrtime` / `memoryUsage` / `cpuUsage` | ❌ | |
+| `hrtime` / `hrtime.bigint` | ✅ | Via `uv_hrtime()` |
+| `memoryUsage` / `cpuUsage` | ❌ | |
 | `arch` | ✅ | |
 | `execPath` | ✅ | Via `uv_exepath()` — absolute, symlink-resolved |
 | `execArgv` | ❌ | |
+
+### node:perf_hooks
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `performance.now` / `performance.timeOrigin` | ✅ | Also exposed as `globalThis.performance` |
+| `performance.mark` / `performance.measure` | ✅ | Stored in entries list |
+| `performance.clearMarks` / `clearMeasures` | ✅ | |
+| `performance.getEntries` / `getEntriesByName` / `getEntriesByType` | ✅ | |
+| `PerformanceObserver` | ⚠️ | Dispatches mark/measure entries; other types (gc, etc.) never fire |
+| `monitorEventLoopDelay` | ⚠️ | Returns histogram-shaped object that always reports zeros |
+| `eventLoopUtilization` | ⚠️ | Returns zeros |
+| `createHistogram` | ❌ | throws |
 
 ### node:os
 
@@ -426,7 +440,7 @@ Notes:
 
 The following modules are not implemented. Importing them throws a `NodeCompatibilityError` with a descriptive message.
 
-`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:perf_hooks`, `node:punycode`, `node:querystring`, `node:readline`, `node:repl`, `node:string_decoder`, `node:tls`, `node:tty`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
+`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:punycode`, `node:querystring`, `node:readline`, `node:repl`, `node:string_decoder`, `node:tls`, `node:tty`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
 
 ---
 

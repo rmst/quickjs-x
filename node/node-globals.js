@@ -10,7 +10,6 @@ import {
 	setTimeout as _setTimeout, clearTimeout as _clearTimeout,
 	timerRef as _timerRef, timerUnref as _timerUnref,
 	setReadHandler, setWriteHandler,
-	hrtime as _hrtime,
 } from 'qn_vm'
 
 // DOMException (Web standard, used by fetch and AbortController)
@@ -122,10 +121,9 @@ globalThis.ReadableStream = class ReadableStream {
 // integrates with the event loop and fires before the next I/O poll.
 globalThis.queueMicrotask = (fn) => _setTimeout(fn, 0)
 
-// Performance API
-globalThis.performance = {
-	now: _hrtime
-}
+// Performance API — implementation lives in node:perf_hooks, globalized here
+import { performance } from "node:perf_hooks"
+globalThis.performance = performance
 
 // Base64 encoding/decoding
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
