@@ -53,7 +53,11 @@ export class IncomingMessage extends EventEmitter {
 	async #pump() {
 		try {
 			for await (const chunk of this.#bodyIter) {
-				this.emit('data', chunk)
+				// Emit as Buffer (owned copy) so the listener can retain it
+				// safely and `body += chunk` utf-8 decodes via Buffer.toString().
+				// Some upstream chunks are views into a reusable read buffer,
+				// so a copy is required to avoid corruption.
+				this.emit('data', Buffer.from(chunk))
 			}
 		} catch {}
 		this.complete = true
