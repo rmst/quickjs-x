@@ -486,5 +486,8 @@ export function afterEach(fn, options = {}) {
 	currentSuite.afterEach.push({ fn, options })
 }
 
-// Default export includes all functions
-export default { describe, test, it, before, after, beforeEach, afterEach }
+// Node's `node:test` default export is the `test` function itself with
+// describe/it/hooks attached as properties, so `import test from "node:test"`
+// works as both `test(...)` and `test.describe(...)`.
+Object.assign(test, { describe, test, it, before, after, beforeEach, afterEach })
+export default test

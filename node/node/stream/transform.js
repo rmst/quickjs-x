@@ -354,3 +354,7 @@ export class Transform extends EventEmitter {
  * provide both _read and _write. For our needs Transform covers it, and
  * we expose Duplex as an alias since most code uses Transform anyway. */
 export class Duplex extends Transform {}
+
+/* PassThrough is a no-op Transform — Transform's default _transform already
+ * forwards each chunk unchanged, so the subclass needs no body. */
+export class PassThrough extends Transform {}

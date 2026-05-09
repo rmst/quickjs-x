@@ -77,6 +77,54 @@ export class IncomingMessage extends EventEmitter {
 			await new Promise(r => this.once('end', r))
 		}
 	}
+
+	// Node's IncomingMessage extends Readable, so `for await (const c of req)`
+	// is the idiomatic way to read a request body. We don't extend Readable,
+	// so bridge through the existing data/end/error event API instead. The
+	// 'data' subscription below also kicks off #pump() via the on() override.
+	[Symbol.asyncIterator]() {
+		return this.#asyncIter()
+	}
+
+	async *#asyncIter() {
+		const queue = []
+		let resolveNext = null
+		let ended = false
+		let error = null
+
+		const onData = (c) => {
+			if (resolveNext) { const r = resolveNext; resolveNext = null; r({ value: c, done: false }) }
+			else queue.push(c)
+		}
+		const onEnd = () => {
+			ended = true
+			if (resolveNext) { const r = resolveNext; resolveNext = null; r({ value: undefined, done: true }) }
+		}
+		const onError = (err) => {
+			error = err
+			if (resolveNext) { const r = resolveNext; resolveNext = null; r({ value: undefined, done: true }) }
+		}
+
+		this.on('data', onData)
+		this.on('end', onEnd)
+		this.on('error', onError)
+
+		try {
+			while (true) {
+				if (error) throw error
+				if (queue.length > 0) { yield queue.shift(); continue }
+				if (ended) return
+				const next = await new Promise(r => { resolveNext = r })
+				if (error) throw error
+				if (next.done) return
+				yield next.value
+			}
+		} finally {
+			this.off('data', onData)
+			this.off('end', onEnd)
+			this.off('error', onError)
+		}
+	}
 }
 
 /**

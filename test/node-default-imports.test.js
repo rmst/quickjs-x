@@ -24,7 +24,7 @@ const cases = [
 	['node:process', 'cwd', 'object'],
 	['node:sqlite', 'DatabaseSync', 'object'],
 	['node:stream', 'Readable', 'object'],
-	['node:test', 'test', 'object'],
+	['node:test', 'test', 'function'],
 	['node:timers', 'setTimeout', 'object'],
 	['node:url', 'URL', 'object'],
 	['node:util', 'promisify', 'object'],
