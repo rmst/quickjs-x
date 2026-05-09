@@ -19,7 +19,6 @@ const STUB_MODULES = [
 	"node:perf_hooks",
 	"node:punycode",
 	"node:querystring",
-	"node:readline",
 	"node:repl",
 	"node:string_decoder",
 	"node:v8",

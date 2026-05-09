@@ -405,6 +405,27 @@ BLOBs returned as `Uint8Array`. Transactions via `exec('BEGIN')`/`exec('COMMIT')
 | `createRequire` | ✅ | String path or `file://` URL |
 | `builtinModules` / `isBuiltin` | ❌ | |
 
+### node:readline / node:readline/promises
+
+Line-mode only (cooked terminal). Raw-mode editing (history, arrow keys, completion) is not implemented yet.
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `readline.createInterface({ input, output })` | ✅ | Accepts either a `Readable` stream (`.on('data', ...)`) or an fd-shaped object like `process.stdin` |
+| `Interface` events: `'line'`, `'close'`, `'pause'`, `'resume'` | ✅ | |
+| `rl.question(query, [options], callback)` | ✅ | Single pending question; `options.signal` invokes `callback()` (no args) on abort |
+| `rl.setPrompt` / `rl.getPrompt` / `rl.prompt` | ✅ | Writes the prompt string to `output` |
+| `rl.write(data)` | ⚠️ | Forwards string to `output`; key descriptor (raw mode) ignored |
+| `rl.pause` / `rl.resume` / `rl.close` | ✅ | |
+| `[Symbol.asyncIterator]` (`for await (const line of rl)`) | ✅ | |
+| `readline.cursorTo` / `moveCursor` / `clearLine` / `clearScreenDown` | ✅ | Plain ANSI sequences written to the output stream |
+| `readline/promises` `Interface` (`question` returns Promise) | ✅ | `signal` rejects with `AbortError` on abort |
+| `terminal: true` (raw-mode editing) | ❌ | Throws `Error` — needs raw-mode + key parsing |
+| `readline.emitKeypressEvents` | ❌ | Throws |
+| `history` / `removeHistoryDuplicates` / `historySize` | ❌ | No history tracking |
+| `completer` option / tab completion | ❌ | |
+| `'history'` / `'SIGCONT'` / `'SIGINT'` / `'SIGTSTP'` events | ❌ | |
+
 ### node:zlib
 
 Backed by [miniz](https://github.com/richgel999/miniz). Async ops run on the libuv thread pool via `uv_queue_work`.
@@ -436,7 +457,7 @@ Notes:
 
 The following modules are not implemented. Importing them throws a `NodeCompatibilityError` with a descriptive message.
 
-`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:perf_hooks`, `node:punycode`, `node:querystring`, `node:readline`, `node:repl`, `node:string_decoder`, `node:tls`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
+`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:perf_hooks`, `node:punycode`, `node:querystring`, `node:repl`, `node:string_decoder`, `node:tls`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
 
 ---
 
