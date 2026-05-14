@@ -108,15 +108,19 @@ export function spawn(command, args, options) {
 		if (stdinHandle) _streamClose(stdinHandle)
 		if (stdoutHandle) _streamClose(stdoutHandle)
 		if (stderrHandle) _streamClose(stderrHandle)
-		// Emit error asynchronously like Node.js does
-		const child = new ChildProcess(null, {
+		// Node contract: when stdio is 'pipe', child.stdin/stdout/stderr are
+		// always stream objects, even on spawn failure. ChildProcess installs
+		// null-stream stubs for those slots and emits 'error' asynchronously.
+		return new ChildProcess(null, {
 			stdinHandle: null,
 			stdoutHandle: null,
 			stderrHandle: null,
+			wantStdin: stdio[0] === 'pipe',
+			wantStdout: stdio[1] === 'pipe',
+			wantStderr: stdio[2] === 'pipe',
 			detached,
 			spawnError: err,
 		})
-		return child
 	}
 
 	// Create ChildProcess instance

@@ -729,6 +729,36 @@ describe('node:child_process shim', () => {
 		assert.ok(result.output.endsWith('/subdir'))
 	})
 
+	// Regression: spawn() of a missing binary used to leave child.stdout/stderr
+	// as null. Caller code following the Node contract (child.stdout.on('data'))
+	// would throw synchronously before any 'error' listener could attach.
+	test('spawn of missing binary exposes stream stubs and emits error', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { spawn } from 'node:child_process'
+			const child = spawn('${dir}/definitely-not-a-binary')
+			const hasStdout = child.stdout !== null && typeof child.stdout.on === 'function'
+			const hasStderr = child.stderr !== null && typeof child.stderr.on === 'function'
+			const hasStdin = child.stdin !== null && typeof child.stdin.write === 'function'
+			// Must not throw — pre-fix this threw "cannot read property 'on' of null"
+			child.stdout.on('data', () => {})
+			child.stderr.on('data', () => {})
+			let errCode = null
+			let closeFired = false
+			child.on('error', (err) => { errCode = err.code || err.message })
+			child.on('close', () => {
+				closeFired = true
+				console.log(JSON.stringify({ hasStdout, hasStderr, hasStdin, errCode, closeFired }))
+			})
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		const r = JSON.parse(output)
+		assert.strictEqual(r.hasStdout, true)
+		assert.strictEqual(r.hasStderr, true)
+		assert.strictEqual(r.hasStdin, true)
+		assert.ok(r.errCode === 'ENOENT' || (r.errCode || '').includes('ENOENT'), `expected ENOENT, got ${r.errCode}`)
+		assert.strictEqual(r.closeFired, true)
+	})
+
 	test('spawn bidirectional streaming', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { spawn } from 'node:child_process'

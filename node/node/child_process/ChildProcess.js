@@ -142,6 +142,47 @@ class PipeReadable extends EventEmitter {
 }
 
 /**
+ * Stub Readable for the spawn-failure path. Node's contract is that
+ * stdin/stdout/stderr are always stream objects when stdio is 'pipe' — even
+ * when spawn fails (ENOENT etc) — so callers can attach listeners
+ * synchronously and learn about the failure via the async 'error' event.
+ */
+class NullReadable extends EventEmitter {
+	destroyed = false
+	setEncoding() { return this }
+	pause() { return this }
+	resume() { return this }
+	destroy() {
+		if (this.destroyed) return
+		this.destroyed = true
+		queueMicrotask(() => this.emit('close'))
+	}
+}
+
+/**
+ * Stub Writable counterpart for the spawn-failure path.
+ */
+class NullWritable extends EventEmitter {
+	destroyed = false
+	write(chunk, encoding, callback) {
+		if (typeof encoding === 'function') { callback = encoding; encoding = undefined }
+		const err = new Error('write after end')
+		if (callback) queueMicrotask(() => callback(err))
+		return false
+	}
+	end(data, encoding, callback) {
+		if (typeof data === 'function') { callback = data; data = undefined }
+		if (typeof encoding === 'function') { callback = encoding; encoding = undefined }
+		if (callback) queueMicrotask(callback)
+	}
+	destroy() {
+		if (this.destroyed) return
+		this.destroyed = true
+		queueMicrotask(() => this.emit('close'))
+	}
+}
+
+/**
  * Writable stream backed by a libuv pipe handle.
  */
 class PipeWritable extends EventEmitter {
@@ -302,16 +343,26 @@ export class ChildProcess extends EventEmitter {
 
 		this.#detached = opts.detached || false
 
-		/* Handle spawn failure */
+		/* Handle spawn failure. Install stream stubs so caller code that does
+		 * child.stdout.on(...) synchronously after spawn() works, matching
+		 * Node's contract. The async 'error' event surfaces the real cause. */
 		if (!procHandle) {
 			this.#exited = true
 			this.#stdoutClosed = true
 			this.#stderrClosed = true
 			this.#stdinClosed = true
+			if (opts.wantStdin) this.stdin = new NullWritable()
+			if (opts.wantStdout) this.stdout = new NullReadable()
+			if (opts.wantStderr) this.stderr = new NullReadable()
+			// Matches Node: emit 'error' then 'close'; do not emit 'exit'
+			// since no process ever ran.
 			queueMicrotask(() => {
 				this.emit('error', opts.spawnError || new Error('spawn failed'))
 				this.#closed = true
 				this.emit('close', null, null)
+				this.stdin?.destroy()
+				this.stdout?.destroy()
+				this.stderr?.destroy()
 			})
 			return
 		}
