@@ -142,8 +142,9 @@ function dirname(path) {
 	return slash >= 0 ? path.slice(0, slash) : "."
 }
 
-function execCmd(argv, verbose) {
+function execCmd(argv, verbose, label) {
 	if (verbose) print(argv.join(" "))
+	else if (label) std.err.puts(`qnc: ${label}\n`)
 	const pid = os.exec(argv, { usePath: true })
 	return pid
 }
@@ -1288,7 +1289,7 @@ function buildExecutable(outFile, cfile, nativeModules, extraLinkFiles,
 		const ret = execCmd([cc, "-O2", "-D_GNU_SOURCE",
 			"-I", incDir, "-I", uvIncDir, "-I", srcDir,
 			"-I", minizIncDir, "-I", minizShimIncDir,
-			"-c", "-o", objPath, src], verbose)
+			"-c", "-o", objPath, src], verbose, `cc ${basename(src)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc: failed to compile '${src}'\n`)
 			return ret
@@ -1319,7 +1320,7 @@ function buildExecutable(outFile, cfile, nativeModules, extraLinkFiles,
 		const ret = execCmd([cc, "-O2",
 			"-DMINIZ_NO_ARCHIVE_APIS", "-DMINIZ_NO_STDIO",
 			"-I", minizIncDir, "-I", minizShimIncDir,
-			"-c", "-o", objPath, src], verbose)
+			"-c", "-o", objPath, src], verbose, `cc ${basename(src)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc: failed to compile miniz source '${src}'\n`)
 			return ret
@@ -1359,7 +1360,7 @@ function buildExecutable(outFile, cfile, nativeModules, extraLinkFiles,
 			"-fwrapv", "-Wno-array-bounds",
 			"-I", incDir, "-I", qjsSrcDir,
 			"-I", uvIncDir, "-I", srcDir,
-			"-c", "-o", objPath, qsrc.src], verbose)
+			"-c", "-o", objPath, qsrc.src], verbose, `cc ${basename(qsrc.src)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc: failed to compile '${qsrc.src}'\n`)
 			return ret
@@ -1391,7 +1392,7 @@ function buildExecutable(outFile, cfile, nativeModules, extraLinkFiles,
 		}
 		const ret = execCmd([cc, "-O2", "-D_GNU_SOURCE", "-DUSE_SANDBOX",
 			"-I", incDir, "-I", qjsSrcDir, "-I", srcDir,
-			"-c", "-o", objPath, fullSrc], verbose)
+			"-c", "-o", objPath, fullSrc], verbose, `cc ${basename(fullSrc)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc: failed to compile '${fullSrc}'\n`)
 			return ret
@@ -1451,7 +1452,7 @@ function buildExecutable(outFile, cfile, nativeModules, extraLinkFiles,
 		const ret = execCmd([cc, "-O2", "-D_GNU_SOURCE",
 			"-I", uvIncDir, `-I${srcDir}/vendor/libuv/src`,
 			...libuvCflags,
-			"-c", "-o", objPath, src], verbose)
+			"-c", "-o", objPath, src], verbose, `cc ${basename(src)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc: failed to compile libuv source '${src}'\n`)
 			return ret
@@ -1487,8 +1488,7 @@ function buildExecutable(outFile, cfile, nativeModules, extraLinkFiles,
 	argv.push("-lm", "-ldl", "-lpthread")
 	if (platform !== "darwin") argv.push("-lrt")
 
-	if (verbose) print(argv.join(" "))
-	return execCmd(argv)
+	return execCmd(argv, verbose, `ld ${basename(outFile)}`)
 }
 
 function compileNativeModule(nm, incDir, cc, verbose, cacheDir) {
@@ -1519,8 +1519,7 @@ function compileNativeModule(nm, incDir, cc, verbose, cacheDir) {
 		for (const flag of nm.cflags) { argv.push(flag) }
 		argv.push("-c", "-o", objPath, src)
 
-		if (verbose) print(argv.join(" "))
-		const ret = execCmd(argv)
+		const ret = execCmd(argv, verbose, `cc ${basename(src)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc: failed to compile native module source '${src}'\n`)
 			return ret
@@ -1709,8 +1708,7 @@ function buildNativePackage(pkgDir, outFilename, verbose, cc) {
 		for (const flag of nm.cflags) { argv.push(flag) }
 		argv.push("-c", "-o", objPath, src)
 
-		if (verbose) print(argv.join(" "))
-		const ret = execCmd(argv)
+		const ret = execCmd(argv, verbose, `cc ${basename(src)}`)
 		if (ret !== 0) {
 			std.err.puts(`qnc package: failed to compile '${src}'\n`)
 			for (const t of tempObjs) os.remove(t)
@@ -1730,8 +1728,7 @@ function buildNativePackage(pkgDir, outFilename, verbose, cc) {
 	for (const ldf of nm.ldflags) linkArgv.push(ldf)
 	linkArgv.push("-lm")
 
-	if (verbose) print(linkArgv.join(" "))
-	const linkRet = execCmd(linkArgv)
+	const linkRet = execCmd(linkArgv, verbose, `ld ${basename(soPath)}`)
 
 	// Clean up temp .o files
 	for (const t of tempObjs) os.remove(t)
