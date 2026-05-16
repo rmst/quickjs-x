@@ -15,47 +15,72 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
 #include <sys/stat.h>
 
 #include "embed.h"
 
-static void write_u16(FILE *f, uint16_t v) {
+static int write_all(FILE *f, const void *buf, size_t len, const char *what) {
+	if (fwrite(buf, 1, len, f) != len) {
+		fprintf(stderr, "qnc-pack: failed to write %s: %s\n", what, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static int write_u16(FILE *f, uint16_t v) {
 	uint8_t b[2] = { v & 0xff, (v >> 8) & 0xff };
-	fwrite(b, 1, 2, f);
+	return write_all(f, b, sizeof(b), "u16");
 }
 
-static void write_u32(FILE *f, uint32_t v) {
+static int write_u32(FILE *f, uint32_t v) {
 	uint8_t b[4] = { v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff };
-	fwrite(b, 1, 4, f);
+	return write_all(f, b, sizeof(b), "u32");
 }
 
-static void write_u64(FILE *f, uint64_t v) {
-	write_u32(f, (uint32_t)(v & 0xffffffff));
-	write_u32(f, (uint32_t)(v >> 32));
+static int write_u64(FILE *f, uint64_t v) {
+	if (write_u32(f, (uint32_t)(v & 0xffffffff)) != 0) return -1;
+	return write_u32(f, (uint32_t)(v >> 32));
 }
 
 static long file_size(const char *path) {
 	FILE *f = fopen(path, "rb");
 	if (!f) return -1;
-	fseek(f, 0, SEEK_END);
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
 	long sz = ftell(f);
 	fclose(f);
 	return sz;
 }
 
-static uint64_t file_mtime(const char *path) {
+static int file_mtime(const char *path, uint64_t *out) {
 	struct stat st;
-	if (stat(path, &st) != 0) return 0;
-	return (uint64_t)st.st_mtime;
+	if (stat(path, &st) != 0) {
+		fprintf(stderr, "qnc-pack: stat failed for '%s': %s\n", path, strerror(errno));
+		return -1;
+	}
+	*out = (uint64_t)st.st_mtime;
+	return 0;
 }
 
 static int copy_file(FILE *dst, const char *src_path) {
 	FILE *src = fopen(src_path, "rb");
-	if (!src) return -1;
+	if (!src) {
+		fprintf(stderr, "qnc-pack: cannot open '%s': %s\n", src_path, strerror(errno));
+		return -1;
+	}
 	uint8_t buf[65536];
 	size_t n;
-	while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
-		fwrite(buf, 1, n, dst);
+	while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+		if (write_all(dst, buf, n, src_path) != 0) {
+			fclose(src);
+			return -1;
+		}
+	}
+	if (ferror(src)) {
+		fprintf(stderr, "qnc-pack: failed to read '%s': %s\n", src_path, strerror(errno));
+		fclose(src);
+		return -1;
+	}
 	fclose(src);
 	return 0;
 }
@@ -90,7 +115,7 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 		sizes[i] = (uint32_t)sz;
-		mtimes[i] = file_mtime(paths[i]);
+		if (file_mtime(paths[i], &mtimes[i]) != 0) return 1;
 	}
 
 	/* Open binary for appending */
@@ -122,20 +147,29 @@ int main(int argc, char **argv) {
 	long dir_start = ftell(f);
 	for (int i = 0; i < nfiles; i++) {
 		uint16_t name_len = (uint16_t)strlen(names[i]);
-		write_u16(f, name_len);
-		fwrite(names[i], 1, name_len, f);
-		write_u64(f, mtimes[i]);
-		write_u32(f, sizes[i]);
+		if (write_u16(f, name_len) != 0 ||
+		    write_all(f, names[i], name_len, names[i]) != 0 ||
+		    write_u64(f, mtimes[i]) != 0 ||
+		    write_u32(f, sizes[i]) != 0) {
+			fclose(f);
+			return 1;
+		}
 	}
 	uint32_t dir_size = (uint32_t)(ftell(f) - dir_start);
 
 	/* Write footer */
-	write_u64(f, data_start);
-	write_u32(f, (uint32_t)nfiles);
-	write_u32(f, dir_size);
-	fwrite(QNC_PACK_MAGIC, 1, QNC_PACK_MAGIC_SIZE, f);
+	if (write_u64(f, data_start) != 0 ||
+	    write_u32(f, (uint32_t)nfiles) != 0 ||
+	    write_u32(f, dir_size) != 0 ||
+	    write_all(f, QNC_PACK_MAGIC, QNC_PACK_MAGIC_SIZE, "archive magic") != 0) {
+		fclose(f);
+		return 1;
+	}
 
-	fclose(f);
+	if (fclose(f) != 0) {
+		fprintf(stderr, "qnc-pack: failed to close '%s': %s\n", binary, strerror(errno));
+		return 1;
+	}
 	free(names);
 	free(paths);
 	free(sizes);

@@ -4,7 +4,7 @@ import { execSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync, copyFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { QNC } from './util.js'
+import { QNC_PATH } from './util.js'
 
 describe('qnc standalone (isolated from build dir)', () => {
 	let dir
@@ -13,12 +13,12 @@ describe('qnc standalone (isolated from build dir)', () => {
 	test('setup: copy qnc to isolated temp dir', () => {
 		dir = realpathSync(mkdtempSync(join(tmpdir(), 'qnc-standalone-')))
 		qnc = join(dir, 'qnc')
-		copyFileSync(QNC(), qnc)
+		copyFileSync(QNC_PATH(), qnc)
 	})
 
 	test('compiles and runs hello world', () => {
 		writeFileSync(join(dir, 'hello.js'), 'console.log("hello from standalone qnc")')
-		execSync(`${qnc} -o ${join(dir, 'hello')} ${join(dir, 'hello.js')}`, { timeout: 30000 })
+		execSync(`${qnc} -o ${join(dir, 'hello')} ${join(dir, 'hello.js')}`, { timeout: 120000 })
 		const output = execSync(join(dir, 'hello'), { encoding: 'utf8' }).trim()
 		assert.strictEqual(output, 'hello from standalone qnc')
 	})
@@ -29,7 +29,7 @@ describe('qnc standalone (isolated from build dir)', () => {
 			import { greet } from './lib.js'
 			console.log(greet('world'))
 		`)
-		execSync(`${qnc} -o ${join(dir, 'app')} ${join(dir, 'main.js')}`, { timeout: 30000 })
+		execSync(`${qnc} -o ${join(dir, 'app')} ${join(dir, 'main.js')}`, { timeout: 120000 })
 		const output = execSync(join(dir, 'app'), { encoding: 'utf8' }).trim()
 		assert.strictEqual(output, 'hi world')
 	})

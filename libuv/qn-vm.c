@@ -1173,7 +1173,12 @@ void qn_vm_free(JSRuntime *rt) {
 	if (g_loop) {
 		/* Run to let pending close callbacks fire */
 		uv_run(g_loop, UV_RUN_NOWAIT);
-		uv_loop_close(g_loop);
+		int r = uv_loop_close(g_loop);
+		if (r != 0) {
+			fprintf(stderr, "qn_vm_free: uv_loop_close failed: %s (%d)\n",
+			        uv_strerror(r), r);
+			abort();
+		}
 		free(g_loop);
 		g_loop = NULL;
 	}

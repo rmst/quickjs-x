@@ -59,7 +59,10 @@ export class IncomingMessage extends EventEmitter {
 				// so a copy is required to avoid corruption.
 				this.emit('data', Buffer.from(chunk))
 			}
-		} catch {}
+		} catch (err) {
+			this.emit('error', err instanceof Error ? err : new Error(String(err)))
+			return
+		}
 		this.complete = true
 		this.emit('end')
 	}
@@ -71,7 +74,12 @@ export class IncomingMessage extends EventEmitter {
 	async _drain() {
 		if (this.complete) return
 		if (!this.#pumping && this.#bodyIter) {
-			try { for await (const _ of this.#bodyIter) {} } catch {}
+			try {
+				for await (const _ of this.#bodyIter) {}
+			} catch (err) {
+				this.emit('error', err instanceof Error ? err : new Error(String(err)))
+				throw err
+			}
 			this.complete = true
 		} else if (this.#pumping) {
 			await new Promise(r => this.once('end', r))

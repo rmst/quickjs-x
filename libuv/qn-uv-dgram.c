@@ -471,5 +471,8 @@ void qn_dgram_cleanup(JSRuntime *rt) {
 			JS_FreeValueRT(rt, d->this_val);
 			d->this_val = JS_UNDEFINED;
 		}
+		if (!d->closed && !uv_is_closing((uv_handle_t *)&d->handle)) {
+			uv_close((uv_handle_t *)&d->handle, qn_dgram_close_cb);
+		}
 	}
 }

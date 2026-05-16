@@ -215,6 +215,7 @@ static void qn_pty_cleanup(JSRuntime *rt) {
 			JS_FreeValueRT(rt, p->this_val);
 			p->this_val = JS_UNDEFINED;
 		}
+		pty_close_handles(p);
 		p = p->next;
 	}
 }

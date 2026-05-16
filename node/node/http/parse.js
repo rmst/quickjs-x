@@ -503,7 +503,11 @@ function createBodyIter(reader, leftover, contentLength, isChunked) {
  */
 async function drainBody(bodyIter) {
 	if (!bodyIter) return
-	try { for await (const _ of bodyIter) {} } catch {}
+	try {
+		for await (const _ of bodyIter) {}
+	} catch (err) {
+		throw new Error(`failed to drain request body: ${err.message}`, { cause: err })
+	}
 }
 
 /**
@@ -604,13 +608,22 @@ export async function handleHttpConnection(socket, options, onRequest, onUpgrade
 			})
 		} catch (err) {
 			if (err?.name === 'AbortError' || err?.message === 'socket closed') return
+			if (onError) onError(500, err.message)
+			else console.error('[http] request handler failed:', err)
 			socket.end()
 			return
 		}
 
 		// Drain unconsumed body unless the callback already did it
 		if (bodyIter && !result?.bodyDrained) {
-			await drainBody(bodyIter)
+			try {
+				await drainBody(bodyIter)
+			} catch (err) {
+				if (onError) onError(400, err.message)
+				else console.error('[http] request body drain failed:', err)
+				socket.destroy()
+				return
+			}
 		}
 
 		if (!keepAlive) {

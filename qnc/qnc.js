@@ -414,6 +414,7 @@ function initTypeScriptTransform() {
 // we can import Sucrase directly.
 let sucraseTransform = null
 let sucraseParse = null
+let sucraseLoadError = null
 
 function loadSucrase() {
 	// Find sucrase in NODE_PATH
@@ -434,7 +435,10 @@ function loadSucrase() {
 
 function stripTypeScript(source, filename) {
 	if (!filename.endsWith(".ts")) return source
-	if (!sucraseTransform) return source // TS not available, pass through
+	if (!sucraseTransform) {
+		const reason = sucraseLoadError ? `: ${sucraseLoadError.message}` : ""
+		throw new Error(`qnc TypeScript support unavailable${reason}`)
+	}
 
 	// Reject value namespaces before either mode runs — neither strip nor
 	// transform can faithfully emit them, so we throw with a clear error
@@ -462,8 +466,8 @@ function stripTypeScript(source, filename) {
 		const blanked = blankTypeScriptTypes(source)
 		sucraseParse(blanked, false, false, false)
 		return blanked
-	} catch {
-		// Fall back to full transform
+	} catch (err) {
+		std.err.puts(`[qnc] TypeScript blanking failed for ${filename}; using full transform: ${err.message}\n`)
 		return sucraseTransform(source, {
 			transforms: ["typescript"],
 			disableESTransforms: true
@@ -1790,9 +1794,11 @@ try {
 	if (sucrase) {
 		sucraseTransform = sucrase.transform
 		sucraseParse = sucrase.parse
+	} else {
+		sucraseLoadError = new Error("Sucrase module not found")
 	}
 } catch (e) {
-	// TS support not available, that's OK
+	sucraseLoadError = e
 }
 
 // Set version info environment variables for synthetic module

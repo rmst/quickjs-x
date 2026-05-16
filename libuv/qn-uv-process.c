@@ -58,6 +58,11 @@ static void qn_process_close_cb(uv_handle_t *handle) {
 	qn_process_maybe_free(p);
 }
 
+static void qn_process_spawn_error_close_cb(uv_handle_t *handle) {
+	QNProcess *p = handle->data;
+	free(p);
+}
+
 static void qn_process_finalizer(JSRuntime *rt, JSValue val) {
 	QNProcess *p = JS_GetOpaque(val, qn_process_class_id);
 	if (!p) return;
@@ -663,10 +668,11 @@ static JSValue js_uv_process_op(JSContext *ctx, JSValueConst this_val,
 		spawn_args_free(ctx, &sa);
 
 		if (r < 0) {
-			/* Unlink before free — process_head still points at proc, and
-			 * qn_process_cleanup walks that list at shutdown. */
+			/* uv_spawn initializes the process handle before some failure paths
+			 * (e.g. exec/cwd errors). Close it explicitly so the main loop does
+			 * not retain a busy handle until shutdown. */
 			process_unlink(proc);
-			free(proc);
+			uv_close((uv_handle_t *)&proc->handle, qn_process_spawn_error_close_cb);
 			return qn_throw_errno(ctx, r);
 		}
 
@@ -777,6 +783,9 @@ void qn_process_cleanup(JSRuntime *rt) {
 		if (!JS_IsUndefined(p->this_val)) {
 			JS_FreeValueRT(rt, p->this_val);
 			p->this_val = JS_UNDEFINED;
+		}
+		if (!p->closed && !uv_is_closing((uv_handle_t *)&p->handle)) {
+			uv_close((uv_handle_t *)&p->handle, qn_process_close_cb);
 		}
 	}
 }

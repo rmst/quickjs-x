@@ -794,15 +794,14 @@ describe('traceModuleGraph', () => {
 		assert.strictEqual(g.size, 1)
 	}))
 
-	test('silently skips files with parse errors', withTemp(async (dir) => {
+	test('throws on files with parse errors', withTemp(async (dir) => {
 		writeFileSync(join(dir, 'main.js'), 'import "./broken.js"\nimport "./ok.js"\n')
 		writeFileSync(join(dir, 'broken.js'), 'this is { not ) valid javascript\n')
 		writeFileSync(join(dir, 'ok.js'), 'export const x = 1\n')
-		const g = traceModuleGraph(join(dir, 'main.js'))
-		/* main + broken (reachable but un-parseable) + ok (still traced) */
-		assert.ok(g.has(join(dir, 'main.js')))
-		assert.ok(g.has(join(dir, 'broken.js')))
-		assert.ok(g.has(join(dir, 'ok.js')))
+		assert.throws(
+			() => traceModuleGraph(join(dir, 'main.js')),
+			/failed to analyse module graph node .*broken\.js/,
+		)
 	}))
 
 	test('throws on missing entry', () => {

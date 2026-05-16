@@ -772,7 +772,11 @@ export function traceModuleGraph(entry, options = {}) {
 	while (stack.length) {
 		const filePath = stack.pop()
 		let analysis
-		try { analysis = loadAndAnalyse(filePath) } catch { continue }
+		try {
+			analysis = loadAndAnalyse(filePath)
+		} catch (err) {
+			throw new Error(`failed to analyse module graph node ${filePath}: ${err.message}`, { cause: err })
+		}
 		const fromDir = dirname(filePath)
 		for (const imp of analysis.imports) {
 			const spec = imp.specifier

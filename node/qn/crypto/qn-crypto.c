@@ -1580,13 +1580,20 @@ static JSValue js_ecdhGenerateKeys(JSContext *ctx, JSValueConst this_val,
 	br_hmac_drbg_context rng;
 	br_hmac_drbg_init(&rng, &br_sha256_vtable, "seed", 4);
 
-	/* Seed with system randomness */
+	/* Seed with system randomness. Entropy failure must be loud: falling
+	 * back to BearSSL's deterministic initial state would produce weak keys. */
 	uint8_t seed[32];
-	br_hmac_drbg_generate(&rng, seed, 0); /* init */
-	/* Use libuv random via the C standard lib for seeding */
-	{
-		FILE *f = fopen("/dev/urandom", "rb");
-		if (f) { fread(seed, 1, sizeof(seed), f); fclose(f); }
+	FILE *f = fopen("/dev/urandom", "rb");
+	if (!f) {
+		return JS_ThrowInternalError(ctx, "failed to open /dev/urandom: %s", strerror(errno));
+	}
+	size_t got = fread(seed, 1, sizeof(seed), f);
+	int read_error = ferror(f);
+	int read_errno = errno;
+	fclose(f);
+	if (got != sizeof(seed)) {
+		return JS_ThrowInternalError(ctx, "failed to read entropy from /dev/urandom: %s",
+			read_error ? strerror(read_errno) : "short read");
 	}
 	br_hmac_drbg_update(&rng, seed, sizeof(seed));
 

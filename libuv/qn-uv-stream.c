@@ -693,13 +693,16 @@ JSModuleDef *js_init_module_qn_uv_stream(JSContext *ctx,
 }
 
 void qn_stream_cleanup(JSRuntime *rt) {
-	/* Release prevent-GC self-references on all live streams so the
-	 * cycle collector (or simple refcount) can free the JS objects.
-	 * Called during runtime shutdown before JS_FreeRuntime. */
+	/* Runtime shutdown: release prevent-GC self-references and force-close
+	 * any remaining libuv handles so qn_vm_free can verify the loop closes
+	 * cleanly instead of hiding leaked handles. */
 	for (QNStream *s = stream_head; s; s = s->next) {
 		if (!JS_IsUndefined(s->this_val)) {
 			JS_FreeValueRT(rt, s->this_val);
 			s->this_val = JS_UNDEFINED;
+		}
+		if (!s->closed && !uv_is_closing(&s->h.handle)) {
+			uv_close(&s->h.handle, qn_stream_close_cb);
 		}
 	}
 	/* Restore the terminal to its original mode if any TTY was put into

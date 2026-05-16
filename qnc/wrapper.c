@@ -41,45 +41,90 @@ static uint64_t read_u64(const uint8_t *p) {
 	return (uint64_t)read_u32(p) | ((uint64_t)read_u32(p + 4) << 32);
 }
 
+static int read_exact(FILE *f, void *buf, size_t len, const char *what) {
+	if (fread(buf, 1, len, f) != len) {
+		fprintf(stderr, "qnc: failed to read %s: %s\n", what,
+			ferror(f) ? strerror(errno) : "short read");
+		return -1;
+	}
+	return 0;
+}
+
+static int write_all(FILE *f, const void *buf, size_t len, const char *what) {
+	if (fwrite(buf, 1, len, f) != len) {
+		fprintf(stderr, "qnc: failed to write %s: %s\n", what, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 /* ---- Filesystem helpers ---- */
 
 /* Recursively create parent directories for path */
-static void ensure_parent_dirs(const char *path) {
+static int ensure_parent_dirs(const char *path) {
 	char *tmp = strdup(path);
+	if (!tmp) return -1;
 	for (char *p = tmp + 1; *p; p++) {
 		if (*p == '/') {
 			*p = '\0';
-			mkdir(tmp, 0700);
+			if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+				fprintf(stderr, "qnc: mkdir %s failed: %s\n", tmp, strerror(errno));
+				free(tmp);
+				return -1;
+			}
 			*p = '/';
 		}
 	}
 	free(tmp);
+	return 0;
 }
 
 /* Recursively remove a directory tree */
-static void rmrf(const char *path) {
+static int rmrf(const char *path) {
 	struct stat st;
-	if (lstat(path, &st) != 0) return;
+	if (lstat(path, &st) != 0) {
+		if (errno == ENOENT) return 0;
+		fprintf(stderr, "qnc: lstat %s failed: %s\n", path, strerror(errno));
+		return -1;
+	}
 
 	if (S_ISDIR(st.st_mode)) {
 		DIR *d = opendir(path);
-		if (d) {
-			struct dirent *ent;
-			while ((ent = readdir(d)) != NULL) {
-				if (ent->d_name[0] == '.' &&
-				    (ent->d_name[1] == '\0' ||
-				     (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
-					continue;
-				char child[PATH_MAX];
-				snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
-				rmrf(child);
-			}
-			closedir(d);
+		if (!d) {
+			fprintf(stderr, "qnc: opendir %s failed: %s\n", path, strerror(errno));
+			return -1;
 		}
-		rmdir(path);
-	} else {
-		unlink(path);
+		struct dirent *ent;
+		while ((ent = readdir(d)) != NULL) {
+			if (ent->d_name[0] == '.' &&
+			    (ent->d_name[1] == '\0' ||
+			     (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+				continue;
+			char child[PATH_MAX];
+			int child_len = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+			if (child_len < 0 || (size_t)child_len >= sizeof(child)) {
+				fprintf(stderr, "qnc: path too long while removing %s/%s\n", path, ent->d_name);
+				closedir(d);
+				return -1;
+			}
+			if (rmrf(child) != 0) {
+				closedir(d);
+				return -1;
+			}
+		}
+		if (closedir(d) != 0) {
+			fprintf(stderr, "qnc: closedir %s failed: %s\n", path, strerror(errno));
+			return -1;
+		}
+		if (rmdir(path) != 0) {
+			fprintf(stderr, "qnc: rmdir %s failed: %s\n", path, strerror(errno));
+			return -1;
+		}
+	} else if (unlink(path) != 0) {
+		fprintf(stderr, "qnc: unlink %s failed: %s\n", path, strerror(errno));
+		return -1;
 	}
+	return 0;
 }
 
 /* Get the path to this executable */
@@ -127,7 +172,7 @@ static int extract_archive(const char *exe_path, const char *target_dir) {
 		}
 		fclose(sf);
 		/* Cache is stale — wipe and re-extract */
-		rmrf(target_dir);
+		if (rmrf(target_dir) != 0) return -1;
 	}
 
 	/* Open the binary */
@@ -141,7 +186,7 @@ static int extract_archive(const char *exe_path, const char *target_dir) {
 	if (file_size < QNC_PACK_FOOTER_SIZE) { fclose(f); return -1; }
 	uint8_t footer[QNC_PACK_FOOTER_SIZE];
 	fseek(f, file_size - QNC_PACK_FOOTER_SIZE, SEEK_SET);
-	if (fread(footer, 1, QNC_PACK_FOOTER_SIZE, f) != QNC_PACK_FOOTER_SIZE) {
+	if (read_exact(f, footer, QNC_PACK_FOOTER_SIZE, "archive footer") != 0) {
 		fclose(f);
 		return -1;
 	}
@@ -162,25 +207,37 @@ static int extract_archive(const char *exe_path, const char *target_dir) {
 	uint8_t *dir = malloc(dir_size);
 	if (!dir) { fclose(f); return -1; }
 	fseek(f, file_size - QNC_PACK_FOOTER_SIZE - dir_size, SEEK_SET);
-	if (fread(dir, 1, dir_size, f) != dir_size) {
+	if (read_exact(f, dir, dir_size, "archive directory") != 0) {
 		free(dir); fclose(f); return -1;
 	}
 
 	/* Create target directory */
-	ensure_parent_dirs(target_dir);
-	mkdir(target_dir, 0700);
+	if (ensure_parent_dirs(target_dir) != 0) { free(dir); fclose(f); return -1; }
+	if (mkdir(target_dir, 0700) != 0 && errno != EEXIST) {
+		fprintf(stderr, "qnc: mkdir %s failed: %s\n", target_dir, strerror(errno));
+		free(dir); fclose(f); return -1;
+	}
 
 	/* Extract files */
 	const uint8_t *dp = dir;
 	uint64_t file_offset = data_start;
 
 	for (uint32_t i = 0; i < file_count; i++) {
-		if (dp + 2 > dir + dir_size) break;
+		if (dp + 2 > dir + dir_size) {
+			fprintf(stderr, "qnc: truncated archive directory before entry %u\n", i);
+			free(dir); fclose(f); return -1;
+		}
 		uint16_t name_len = read_u16(dp); dp += 2;
 
-		if (dp + name_len + 8 + 4 > dir + dir_size) break;
+		if (dp + name_len + 8 + 4 > dir + dir_size) {
+			fprintf(stderr, "qnc: truncated archive directory entry %u\n", i);
+			free(dir); fclose(f); return -1;
+		}
 		char name[1024];
-		if (name_len >= sizeof(name)) break;
+		if (name_len >= sizeof(name)) {
+			fprintf(stderr, "qnc: archive entry name too long\n");
+			free(dir); fclose(f); return -1;
+		}
 		memcpy(name, dp, name_len);
 		name[name_len] = '\0';
 		dp += name_len;
@@ -190,47 +247,73 @@ static int extract_archive(const char *exe_path, const char *target_dir) {
 
 		/* Build output path */
 		char outpath[PATH_MAX];
-		snprintf(outpath, sizeof(outpath), "%s/%s", target_dir, name);
-		ensure_parent_dirs(outpath);
+		int path_len = snprintf(outpath, sizeof(outpath), "%s/%s", target_dir, name);
+		if (path_len < 0 || (size_t)path_len >= sizeof(outpath)) {
+			fprintf(stderr, "qnc: archive output path too long for %s\n", name);
+			free(dir); fclose(f); return -1;
+		}
+		if (ensure_parent_dirs(outpath) != 0) { free(dir); fclose(f); return -1; }
 
 		/* Read and write file data */
-		fseek(f, file_offset, SEEK_SET);
+		if (fseek(f, file_offset, SEEK_SET) != 0) {
+			fprintf(stderr, "qnc: seek failed for %s: %s\n", name, strerror(errno));
+			free(dir); fclose(f); return -1;
+		}
 		FILE *out = fopen(outpath, "wb");
-		if (out) {
-			uint8_t buf[65536];
-			uint32_t remaining = fsize;
-			while (remaining > 0) {
-				size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
-				size_t n = fread(buf, 1, chunk, f);
-				if (n == 0) break;
-				fwrite(buf, 1, n, out);
-				remaining -= n;
+		if (!out) {
+			fprintf(stderr, "qnc: failed to open %s: %s\n", outpath, strerror(errno));
+			free(dir); fclose(f); return -1;
+		}
+		uint8_t buf[65536];
+		uint32_t remaining = fsize;
+		while (remaining > 0) {
+			size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
+			if (read_exact(f, buf, chunk, name) != 0 ||
+			    write_all(out, buf, chunk, outpath) != 0) {
+				fclose(out); free(dir); fclose(f); return -1;
 			}
-			fclose(out);
+			remaining -= chunk;
+		}
+		if (fclose(out) != 0) {
+			fprintf(stderr, "qnc: failed to close %s: %s\n", outpath, strerror(errno));
+			free(dir); fclose(f); return -1;
+		}
 
-			/* Restore mtime */
-			if (mtime_sec > 0) {
-				struct utimbuf ut;
-				ut.actime = ut.modtime = (time_t)mtime_sec;
-				utime(outpath, &ut);
+		/* Restore mtime */
+		if (mtime_sec > 0) {
+			struct utimbuf ut;
+			ut.actime = ut.modtime = (time_t)mtime_sec;
+			if (utime(outpath, &ut) != 0) {
+				fprintf(stderr, "qnc: failed to set mtime on %s: %s\n", outpath, strerror(errno));
+				free(dir); fclose(f); return -1;
 			}
+		}
 
-			/* Make qjs executable */
-			if (strcmp(name, "qjs") == 0)
-				chmod(outpath, 0755);
+		/* Make qjs executable */
+		if (strcmp(name, "qjs") == 0 && chmod(outpath, 0755) != 0) {
+			fprintf(stderr, "qnc: chmod failed for %s: %s\n", outpath, strerror(errno));
+			free(dir); fclose(f); return -1;
 		}
 
 		file_offset += fsize;
 	}
 
 	free(dir);
-	fclose(f);
+	if (fclose(f) != 0) {
+		fprintf(stderr, "qnc: failed to close archive %s: %s\n", exe_path, strerror(errno));
+		return -1;
+	}
 
 	/* Write stamp file */
 	sf = fopen(stamp_path, "w");
-	if (sf) {
-		fprintf(sf, "%lld", (long long)exe_stat.st_mtime);
-		fclose(sf);
+	if (!sf) {
+		fprintf(stderr, "qnc: failed to write stamp %s: %s\n", stamp_path, strerror(errno));
+		return -1;
+	}
+	int stamp_failed = fprintf(sf, "%lld", (long long)exe_stat.st_mtime) < 0;
+	if (fclose(sf) != 0 || stamp_failed) {
+		fprintf(stderr, "qnc: failed to finish stamp %s: %s\n", stamp_path, strerror(errno));
+		return -1;
 	}
 
 	return 0;
