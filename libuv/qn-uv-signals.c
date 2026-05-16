@@ -9,12 +9,14 @@
  */
 
 #include "qn-uv-utils.h"
+#include "qn-vm.h"
 
 #include <string.h>
 
 /* ---- SignalHandler opaque class ---- */
 
-typedef struct {
+typedef struct QNSignalHandler {
+	struct QNSignalHandler *next;
 	JSContext *ctx;
 	int closed;
 	int finalized;
@@ -25,12 +27,30 @@ typedef struct {
 
 static JSClassID qn_signal_handler_class_id;
 
+/* Linked list of all live signal handlers, for shutdown cleanup. */
+static QNSignalHandler *signal_head = NULL;
+
+static void signal_link(QNSignalHandler *sh) {
+	sh->next = signal_head;
+	signal_head = sh;
+}
+
+static void signal_unlink(QNSignalHandler *sh) {
+	QNSignalHandler **pp = &signal_head;
+	while (*pp) {
+		if (*pp == sh) { *pp = sh->next; return; }
+		pp = &(*pp)->next;
+	}
+}
+
 static void uv__signal_close_cb(uv_handle_t *handle) {
 	QNSignalHandler *sh = handle->data;
 	if (sh) {
 		sh->closed = 1;
-		if (sh->finalized)
+		if (sh->finalized) {
+			signal_unlink(sh);
 			js_free(sh->ctx, sh);
+		}
 	}
 }
 
@@ -44,10 +64,12 @@ static void qn_signal_handler_finalizer(JSRuntime *rt, JSValue val) {
 	if (sh) {
 		JS_FreeValueRT(rt, sh->func);
 		sh->finalized = 1;
-		if (sh->closed)
+		if (sh->closed) {
+			signal_unlink(sh);
 			js_free(sh->ctx, sh);
-		else
+		} else {
 			maybe_close(sh);
+		}
 	}
 }
 
@@ -116,6 +138,7 @@ static JSValue js_uv_signal(JSContext *ctx, JSValueConst this_val,
 	sh->func = JS_DupValue(ctx, func);
 
 	JS_SetOpaque(obj, sh);
+	signal_link(sh);
 	return obj;
 }
 
@@ -149,6 +172,22 @@ static const JSCFunctionListEntry js_uv_signal_funcs[] = {
 	QN_CFUNC_DEF("signal", 2, js_uv_signal),
 };
 
+void qn_signals_cleanup(JSRuntime *rt) {
+	/* Runtime shutdown: drop the JS callback ref and force-close any
+	 * remaining handles so qn_vm_free's uv_loop_close doesn't see a busy
+	 * loop. Signal handles are unref'd by default so a live one won't keep
+	 * the event loop alive, which is exactly how they reach this path. */
+	for (QNSignalHandler *sh = signal_head; sh; sh = sh->next) {
+		if (!JS_IsUndefined(sh->func)) {
+			JS_FreeValueRT(rt, sh->func);
+			sh->func = JS_UNDEFINED;
+		}
+		if (!sh->closed && !uv_is_closing((uv_handle_t *)&sh->handle)) {
+			uv_close((uv_handle_t *)&sh->handle, uv__signal_close_cb);
+		}
+	}
+}
+
 static int js_uv_signals_init(JSContext *ctx, JSModuleDef *m) {
 	/* Register SignalHandler class */
 	JS_NewClassID(&qn_signal_handler_class_id);
@@ -179,5 +218,6 @@ JSModuleDef *js_init_module_qn_uv_signals(JSContext *ctx, const char *module_nam
 	JS_AddModuleExportList(ctx, m, js_uv_signal_funcs,
 		sizeof(js_uv_signal_funcs) / sizeof(js_uv_signal_funcs[0]));
 	JS_AddModuleExport(ctx, m, "signals");
+	qn_vm_register_cleanup(qn_signals_cleanup);
 	return m;
 }

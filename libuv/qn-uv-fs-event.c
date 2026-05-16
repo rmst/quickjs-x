@@ -18,6 +18,7 @@
  */
 
 #include "qn-uv-utils.h"
+#include "qn-vm.h"
 
 #include <string.h>
 
@@ -30,7 +31,8 @@
  *              Note: same pattern recurs in qn-uv-signals.c / qn-uv-stream.c;
  *              extracting a shared helper is worthwhile if a 4th case arises.
  */
-typedef struct {
+typedef struct QNFsEvent {
+	struct QNFsEvent *next;
 	JSContext *ctx;
 	int closed;
 	int detached;
@@ -40,6 +42,22 @@ typedef struct {
 } QNFsEvent;
 
 static JSClassID qn_fs_event_class_id;
+
+/* Linked list of all live fs-event handles, for shutdown cleanup. */
+static QNFsEvent *fs_event_head = NULL;
+
+static void fs_event_link(QNFsEvent *fe) {
+	fe->next = fs_event_head;
+	fs_event_head = fe;
+}
+
+static void fs_event_unlink(QNFsEvent *fe) {
+	QNFsEvent **pp = &fs_event_head;
+	while (*pp) {
+		if (*pp == fe) { *pp = fe->next; return; }
+		pp = &(*pp)->next;
+	}
+}
 
 static void uv__fs_event_close_cb(uv_handle_t *handle) {
 	QNFsEvent *fe = handle->data;
@@ -54,8 +72,10 @@ static void uv__fs_event_close_cb(uv_handle_t *handle) {
 		 * Do not touch fe after this point. */
 		return;
 	}
-	if (fe->detached)
+	if (fe->detached) {
+		fs_event_unlink(fe);
 		js_free(fe->ctx, fe);
+	}
 }
 
 static void qn_fs_event_finalizer(JSRuntime *rt, JSValue val) {
@@ -70,6 +90,7 @@ static void qn_fs_event_finalizer(JSRuntime *rt, JSValue val) {
 		if (!uv_is_closing((uv_handle_t *)&fe->handle))
 			uv_close((uv_handle_t *)&fe->handle, uv__fs_event_close_cb);
 	} else {
+		fs_event_unlink(fe);
 		js_free(fe->ctx, fe);
 	}
 }
@@ -159,6 +180,7 @@ static JSValue js_uv_fs_watch(JSContext *ctx, JSValueConst this_val,
 	}
 
 	JS_SetOpaque(obj, fe);
+	fs_event_link(fe);
 	/* prevent GC while libuv holds the handle */
 	fe->this_val = JS_DupValue(ctx, obj);
 	return obj;
@@ -205,6 +227,25 @@ static const JSCFunctionListEntry js_uv_fs_event_funcs[] = {
 	QN_CONST2("UV_CHANGE", UV_CHANGE),
 };
 
+void qn_fs_event_cleanup(JSRuntime *rt) {
+	/* Runtime shutdown: drop prevent-GC self-refs and force-close any
+	 * remaining handles so qn_vm_free's uv_loop_close doesn't see a busy
+	 * loop. Do NOT set fe->detached here — if the user still holds a
+	 * reference to the watch handle, the finalizer must still run later
+	 * to free fe. close_cb will leave the struct intact when neither
+	 * detached nor this_val are set; the eventual finalizer (during
+	 * JS_FreeRuntime) will free it via the closed-branch. */
+	for (QNFsEvent *fe = fs_event_head; fe; fe = fe->next) {
+		if (!JS_IsUndefined(fe->this_val)) {
+			JS_FreeValueRT(rt, fe->this_val);
+			fe->this_val = JS_UNDEFINED;
+		}
+		if (!fe->closed && !uv_is_closing((uv_handle_t *)&fe->handle)) {
+			uv_close((uv_handle_t *)&fe->handle, uv__fs_event_close_cb);
+		}
+	}
+}
+
 static int js_uv_fs_event_init(JSContext *ctx, JSModuleDef *m) {
 	JS_NewClassID(&qn_fs_event_class_id);
 	JSRuntime *rt = JS_GetRuntime(ctx);
@@ -223,5 +264,6 @@ JSModuleDef *js_init_module_qn_uv_fs_event(JSContext *ctx, const char *module_na
 	if (!m) return NULL;
 	JS_AddModuleExportList(ctx, m, js_uv_fs_event_funcs,
 		sizeof(js_uv_fs_event_funcs) / sizeof(js_uv_fs_event_funcs[0]));
+	qn_vm_register_cleanup(qn_fs_event_cleanup);
 	return m;
 }

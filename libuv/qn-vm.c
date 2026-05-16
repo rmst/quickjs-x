@@ -1139,42 +1139,69 @@ void qn_vm_free(JSRuntime *rt) {
 	uv_close((uv_handle_t *)&g_idle, NULL);
 	uv_close((uv_handle_t *)&g_check, NULL);
 
-	/* Free all timers */
-	while (timer_head) {
-		QNTimer *t = timer_head;
-		timer_head = t->next;
-		JS_FreeValueRT(rt, t->func);
-		if (!t->closed) {
-			uv_timer_stop(&t->handle);
+	/* Schedule close on every live timer. The close cb (timer_close_cb)
+	 * unlinks from timer_head and frees the struct, so the list drains
+	 * itself once the loop runs. uv_timer_stop alone is not enough — the
+	 * handle stays in the loop's handle queue and would block uv_loop_close. */
+	for (QNTimer *t = timer_head; t; t = t->next) {
+		if (!JS_IsUndefined(t->func)) {
+			JS_FreeValueRT(rt, t->func);
+			t->func = JS_UNDEFINED;
 		}
-		js_free_rt(rt, t);
+		if (!t->closed) {
+			t->closed = true;
+			uv_close((uv_handle_t *)&t->handle, timer_close_cb);
+		}
 	}
 
-	/* Free all poll handles */
-	while (poll_head) {
+	/* Same for polls. poll_close_cb expects the entry to be unlinked first
+	 * (matches poll_free_entry's contract). Non-inited entries never registered
+	 * a libuv handle, so free them directly. */
+	{
 		QNPoll *p = poll_head;
-		poll_head = p->next;
-		JS_FreeValueRT(rt, p->rw_func[0]);
-		JS_FreeValueRT(rt, p->rw_func[1]);
-		if (p->handle_inited) {
-			uv_poll_stop(&p->handle);
+		while (p) {
+			QNPoll *next = p->next;
+			if (!JS_IsNull(p->rw_func[0])) {
+				JS_FreeValueRT(rt, p->rw_func[0]);
+				p->rw_func[0] = JS_NULL;
+			}
+			if (!JS_IsNull(p->rw_func[1])) {
+				JS_FreeValueRT(rt, p->rw_func[1]);
+				p->rw_func[1] = JS_NULL;
+			}
+			poll_unlink(p);
+			if (p->handle_inited && !uv_is_closing((uv_handle_t *)&p->handle)) {
+				uv_poll_stop(&p->handle);
+				uv_close((uv_handle_t *)&p->handle, poll_close_cb);
+			} else if (!p->handle_inited) {
+				js_free_rt(rt, p);
+			}
+			p = next;
 		}
-		js_free_rt(rt, p);
 	}
 
 	/* Free rejection tracking entries */
 	rejection_free_all(rt);
 
-	/* Release prevent-GC refs on all handles so objects can be freed. */
+	/* Per-module cleanups: drop prevent-GC refs and force-close any handles
+	 * still alive (stream/process/dgram/pty/signal/fs-event). */
 	for (int i = 0; i < g_cleanup_count; i++)
 		g_cleanup_fns[i](rt);
 	g_cleanup_count = 0;
 
 	if (g_loop) {
-		/* Run to let pending close callbacks fire */
-		uv_run(g_loop, UV_RUN_NOWAIT);
+		/* Drain pending close callbacks. Each iteration fires the close cbs
+		 * queued above; a close cb may itself trigger more closes (e.g.
+		 * dropping a this_val ref runs a finalizer that closes another
+		 * handle), so keep running until uv_run reports no further work. */
+		while (uv_run(g_loop, UV_RUN_NOWAIT) > 0) {}
+
 		int r = uv_loop_close(g_loop);
 		if (r != 0) {
+			/* Every handle type we know about is closed above, so reaching
+			 * here means a new handle type was added without a cleanup hook,
+			 * or a close cb queued work the drain loop couldn't finish.
+			 * Surface it loudly rather than masking the leak. */
 			fprintf(stderr, "qn_vm_free: uv_loop_close failed: %s (%d)\n",
 			        uv_strerror(r), r);
 			abort();
