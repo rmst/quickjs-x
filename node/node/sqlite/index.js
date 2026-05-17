@@ -118,34 +118,46 @@ export class StatementSync {
     run(...params) {
         this.#stmt.reset();
         this.#bindParams(params);
-        this.#stmt.step();
-
-        return {
-            changes: this.#db.changes(),
-            lastInsertRowid: this.#db.last_insert_rowid()
-        };
+        try {
+            this.#stmt.step();
+            return {
+                changes: this.#db.changes(),
+                lastInsertRowid: this.#db.last_insert_rowid()
+            };
+        } finally {
+            // Reset to end the implicit autocommit transaction and release any
+            // WAL read mark. Without this, the statement stays "active" between
+            // calls — pinning a WAL frame and blocking checkpoint progress.
+            this.#stmt.reset();
+        }
     }
 
     get(...params) {
         this.#stmt.reset();
         this.#bindParams(params);
-
-        const result = this.#stmt.step();
-        if (result === 'row') {
-            return this.#readRow();
+        try {
+            const result = this.#stmt.step();
+            if (result === 'row') {
+                return this.#readRow();
+            }
+            return undefined;
+        } finally {
+            this.#stmt.reset();
         }
-        return undefined;
     }
 
     all(...params) {
         this.#stmt.reset();
         this.#bindParams(params);
-
-        const rows = [];
-        while (this.#stmt.step() === 'row') {
-            rows.push(this.#readRow());
+        try {
+            const rows = [];
+            while (this.#stmt.step() === 'row') {
+                rows.push(this.#readRow());
+            }
+            return rows;
+        } finally {
+            this.#stmt.reset();
         }
-        return rows;
     }
 
     get sourceSQL() {

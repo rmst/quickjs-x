@@ -295,6 +295,30 @@ describe('node:sqlite DatabaseSync', () => {
 		assert.deepStrictEqual(JSON.parse(output), { y: 7 })
 	})
 
+	test('WAL checkpoint succeeds after get/run (statements reset)', ({ bin, dir }) => {
+		// Regression: if run()/get() leave the statement active after step(),
+		// they hold a WAL read mark / open transaction. wal_checkpoint(TRUNCATE)
+		// then returns busy=1 and the WAL never drains. See node/node/sqlite/index.js.
+		writeFileSync(`${dir}/test.js`, `
+			import { DatabaseSync } from 'node:sqlite'
+			const db = new DatabaseSync('${dir}/wal.db')
+			db.exec('PRAGMA journal_mode=WAL')
+			db.exec('CREATE TABLE t (k INTEGER PRIMARY KEY, v TEXT)')
+			const ins = db.prepare('INSERT OR REPLACE INTO t (k, v) VALUES (?, ?)')
+			const sel = db.prepare('SELECT v FROM t WHERE k = ?')
+			for (let i = 0; i < 50; i++) {
+				ins.run(i, 'x'.repeat(100))
+				sel.get(i)
+			}
+			const r = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
+			console.log(JSON.stringify(r))
+			db.close()
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		const r = JSON.parse(output)
+		assert.strictEqual(r.busy, 0, 'wal_checkpoint busy must be 0 (no pinned reader/writer)')
+	})
+
 	test('throws on closed database', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { DatabaseSync } from 'node:sqlite'
