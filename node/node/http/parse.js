@@ -217,6 +217,14 @@ export function parseRequestHead(data) {
 
 /**
  * Build an HTTP/1.1 request string.
+ *
+ * Host and Connection are set by the transport — Host from the destination
+ * URL, Connection because qn fetch always uses single-shot connections (no
+ * keep-alive across requests). User-supplied headers with those names are
+ * dropped so we never emit duplicates. RFC 7230 allows duplicates only for
+ * comma-list headers, which Connection is, but some receivers' parsers
+ * concatenate the values ("close, close") and then fail equality checks
+ * like `conn === 'close'`, which silently flips them to keep-alive mode.
  */
 export function buildRequest(method, path, host, port, headers, isDefaultPort) {
 	if (/[\r\n]/.test(method))
@@ -228,7 +236,8 @@ export function buildRequest(method, path, host, port, headers, isDefaultPort) {
 	const hostHeader = isDefaultPort ? host : `${host}:${port}`
 	let req = `${method} ${path} HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n`
 	for (const [key, value] of headers) {
-		if (key.toLowerCase() === 'host') continue
+		const lower = key.toLowerCase()
+		if (lower === 'host' || lower === 'connection') continue
 		if (/[\r\n]/.test(key) || /[\r\n]/.test(value))
 			throw new TypeError(`Invalid header: ${key}`)
 		req += `${key}: ${value}\r\n`
@@ -443,11 +452,18 @@ export async function* bodyStream(reader, leftover, contentLength, isChunked) {
 
 /**
  * Determine keep-alive from Connection header and HTTP version.
+ *
+ * The Connection header is a comma-separated list of connection-option tokens
+ * (RFC 7230 §6.1). "close" anywhere in the list forces close; "keep-alive"
+ * anywhere forces keep-alive; otherwise fall back to HTTP/1.1 default
+ * (keep-alive) vs HTTP/1.0 default (close).
  */
 function detectKeepAlive(headers, httpVersion) {
 	const conn = (headers['connection'] || '').toLowerCase()
-	return conn === 'close' ? false :
-		conn === 'keep-alive' ? true : httpVersion === '1.1'
+	const tokens = conn.split(/\s*,\s*/)
+	if (tokens.includes('close')) return false
+	if (tokens.includes('keep-alive')) return true
+	return httpVersion === '1.1'
 }
 
 /**

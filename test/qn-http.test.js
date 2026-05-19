@@ -433,6 +433,83 @@ describe('qn:http serve()', () => {
 		assert.strictEqual(result.hasHello, true)
 	})
 
+	// Regression: a user-supplied Connection header used to be appended to the
+	// hardcoded "Connection: close" from buildRequest, producing duplicate
+	// headers on the wire ("Connection: close" twice). Receivers that
+	// concatenate duplicates into "close, close" then failed strict-equality
+	// keep-alive detection. buildRequest now drops user-supplied Connection.
+	testQnOnly('fetch drops user-supplied Connection header (no duplicate on wire)', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import * as net from 'node:net'
+			const srv = net.createServer((sock) => {
+				let buf = ''
+				sock.on('data', c => {
+					buf += new TextDecoder().decode(c)
+					if (buf.includes('\\r\\n\\r\\n')) {
+						sock.write('HTTP/1.1 200 OK\\r\\ncontent-length: 2\\r\\nconnection: close\\r\\n\\r\\nok')
+						sock.end()
+					}
+				})
+				sock.on('end', () => {
+					const lines = buf.split('\\r\\n')
+					const connHeaders = lines.filter(l => /^connection:/i.test(l))
+					console.log(JSON.stringify({ connHeaderCount: connHeaders.length, headers: connHeaders }))
+				})
+			})
+			await new Promise(r => srv.listen(0, '127.0.0.1', r))
+			const port = srv.address().port
+			await fetch('http://127.0.0.1:' + port + '/', {
+				method: 'POST',
+				headers: { 'content-type': 'text/plain', 'connection': 'close' },
+				body: 'x',
+			}).then(r => r.text())
+			await new Promise(r => setTimeout(r, 100))
+			srv.close()
+		`)
+		const output = $({ timeout: 5000 })`${bin} ${dir}/test.js`
+		const result = JSON.parse(output.trim())
+		assert.strictEqual(result.connHeaderCount, 1, `Expected exactly one Connection header, got: ${JSON.stringify(result.headers)}`)
+	})
+
+	// Regression: Connection is a comma-separated list (RFC 7230 §6.1).
+	// detectKeepAlive used to do `conn === 'close'` which failed when the
+	// header contained a list like "close, close" (two duplicate values
+	// from a buggy proxy), silently flipping the server into keep-alive
+	// mode.
+	testQnOnly('Connection header parses as token list, not strict string', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { serve } from 'qn:http'
+			import * as net from 'node:net'
+			let secondReqArrived = false
+			const srv = await serve({ port: 0, keepAliveTimeout: 500 }, () => {
+				if (secondReqArrived) return new Response('second')
+				secondReqArrived = true
+				return new Response('first')
+			})
+			const port = srv.address().port
+
+			// Send a single request with a comma-list "close, close" Connection header,
+			// then check whether the server closes (correct) or keeps the socket open
+			// waiting for a second request (the bug — strict 'close' equality failed).
+			const sock = net.connect(port, '127.0.0.1')
+			await new Promise(r => sock.once('connect', r))
+			sock.write('POST / HTTP/1.1\\r\\nHost: x\\r\\nConnection: close, close\\r\\nContent-Length: 1\\r\\n\\r\\nx')
+			let buf = ''
+			sock.on('data', c => buf += new TextDecoder().decode(c))
+			const closed = await new Promise(r => {
+				sock.on('end', () => r(true))
+				setTimeout(() => r(false), 1000)
+			})
+			sock.destroy()
+			srv.close()
+			console.log(JSON.stringify({ closed, gotResponse: buf.includes('first') }))
+		`)
+		const output = $({ timeout: 5000 })`${bin} ${dir}/test.js`
+		const result = JSON.parse(output.trim())
+		assert.strictEqual(result.gotResponse, true)
+		assert.strictEqual(result.closed, true, 'server should close the connection when Connection: "close, close" is received')
+	})
+
 	testQnOnly('error after first request does not crash server', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { serve } from 'qn:http'
