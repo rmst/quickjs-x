@@ -65,6 +65,50 @@ describe('node:http Server', () => {
 		})
 	})
 
+	testQnOnly('http.request finish waits for queued body writes', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+
+			const server = http.createServer((req, res) => {
+				let total = 0
+				req.on('data', (chunk) => { total += chunk.byteLength })
+				req.on('end', () => {
+					res.end(String(total))
+				})
+			})
+
+			server.listen(0, '127.0.0.1', () => {
+				const { port } = server.address()
+				const req = http.request({
+					host: '127.0.0.1',
+					port,
+					method: 'POST',
+					path: '/upload',
+					headers: { 'Content-Length': String(256 * 1024) },
+				}, (res) => {
+					let body = ''
+					res.on('data', (chunk) => { body += chunk })
+					res.on('end', () => {
+						console.log(finished)
+						console.log(body)
+						server.close()
+					})
+				})
+				let finished = false
+				const chunk = 'x'.repeat(1024)
+				for (let i = 0; i < 256; i++) {
+					req.write(chunk)
+				}
+				req.end(() => { finished = true })
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			assert.equal(lines[0], 'true')
+			assert.equal(lines[1], String(256 * 1024))
+		})
+	})
+
 	testQnOnly('http client decodes chunked responses', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import http from 'node:http'

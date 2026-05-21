@@ -8,6 +8,7 @@ import { Buffer } from 'node:buffer'
 import { createConnection, createServer as createTcpServer, Socket } from 'node:net'
 import {
 	bodyStream, buildRequest, handleHttpConnection, readResponseHead, socketReader,
+	responseBodyFraming,
 } from 'node:http/parse'
 
 const CRLF = '\r\n'
@@ -75,6 +76,7 @@ function byteLength(data) {
 export class IncomingMessage extends EventEmitter {
 	#bodyIter = null
 	#pumping = false
+	#abandonTimer = null
 
 	constructor(socket) {
 		super()
@@ -90,14 +92,26 @@ export class IncomingMessage extends EventEmitter {
 	}
 
 	/** @internal called by HTTPServer to provide the body iterator */
-	_setBody(bodyIter) {
+	_setBody(bodyIter, options = {}) {
 		this.#bodyIter = bodyIter
+		if (options.destroyIfUnconsumedAfter !== undefined) {
+			this.#abandonTimer = setTimeout(() => {
+				if (!this.#pumping && !this.complete) {
+					this.socket.destroy()
+				}
+			}, options.destroyIfUnconsumedAfter)
+			if (this.#abandonTimer.unref) this.#abandonTimer.unref()
+		}
 	}
 
 	on(event, fn) {
 		super.on(event, fn)
 		if (event === 'data' && this.#bodyIter && !this.#pumping) {
 			this.#pumping = true
+			if (this.#abandonTimer) {
+				clearTimeout(this.#abandonTimer)
+				this.#abandonTimer = null
+			}
 			this.#pump()
 		}
 		return this
@@ -117,6 +131,10 @@ export class IncomingMessage extends EventEmitter {
 			return
 		}
 		this.complete = true
+		if (this.#abandonTimer) {
+			clearTimeout(this.#abandonTimer)
+			this.#abandonTimer = null
+		}
 		this.emit('end')
 	}
 
@@ -366,11 +384,21 @@ export class ClientRequest extends EventEmitter {
 	#ended = false
 	#chunked = false
 	#writeQueue = []
+	#writeQueueOffset = 0
+	#queuedBytes = 0
+	#pendingWrites = 0
+	#finishCallback = null
+	#finished = false
+	#readingResponse = false
+	#destroyed = false
+	#errored = false
+	#socketBackpressured = false
 	#method
 	#path
 	#host
 	#port
 	#socketPath
+	#highWaterMark = 64 * 1024
 
 	constructor(input, options, callback) {
 		super()
@@ -413,9 +441,9 @@ export class ClientRequest extends EventEmitter {
 			this.emit('error', err)
 			return false
 		}
-		this.#sendHead(true)
-		this.#writeBody(chunk, callback)
-		return true
+		let ret = this.#sendHead(true)
+		ret = this.#writeBody(chunk, callback) && ret
+		return ret
 	}
 
 	end(data, encoding, callback) {
@@ -434,11 +462,11 @@ export class ClientRequest extends EventEmitter {
 			this.setHeader('Content-Length', byteLength(data))
 		}
 
+		this.#finishCallback = callback || null
 		this.#sendHead(data !== undefined && data !== null)
 		if (data !== undefined && data !== null) this.#writeBody(data)
 		if (this.#chunked) this.#writeRaw('0\r\n\r\n')
-		if (callback) queueMicrotask(callback)
-		this.#readResponse()
+		this.#maybeFinishRequest()
 		return this
 	}
 
@@ -447,8 +475,10 @@ export class ClientRequest extends EventEmitter {
 	}
 
 	destroy(err) {
+		if (this.#destroyed) return this
+		this.#destroyed = true
 		if (this.#socket) this.#socket.destroy(err)
-		else if (err) this.emit('error', err)
+		else if (err) this.#emitError(err)
 		return this
 	}
 
@@ -461,12 +491,17 @@ export class ClientRequest extends EventEmitter {
 			this.emit('socket', this.#socket)
 			this.#flush()
 		})
-		this.#socket.on('error', (err) => this.emit('error', err))
+		this.#socket.on('error', (err) => this.#emitError(err))
+		this.#socket.on('drain', () => {
+			this.#socketBackpressured = false
+			this.#flush()
+			if (!this.#destroyed && this.#queuedBytes < this.#highWaterMark) this.emit('drain')
+		})
 		this.#socket.on('close', () => this.emit('close'))
 	}
 
 	#sendHead(hasBody) {
-		if (this.#headerSent) return
+		if (this.#headerSent) return true
 		if (hasBody && !this.getHeader('content-length')) {
 			this.#headers.set('transfer-encoding', { key: 'Transfer-Encoding', value: 'chunked' })
 			this.#chunked = true
@@ -480,41 +515,75 @@ export class ClientRequest extends EventEmitter {
 			this.#port === 80,
 		)
 		this.#headerSent = true
-		this.#writeRaw(req)
+		return this.#writeRaw(req)
 	}
 
 	#writeBody(chunk, callback) {
 		if (this.#chunked) {
 			const data = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk
-			this.#writeRaw(data.byteLength.toString(16) + CRLF)
-			this.#writeRaw(data)
-			this.#writeRaw(CRLF, callback)
-		} else {
-			this.#writeRaw(chunk, callback)
+			let ret = this.#writeRaw(data.byteLength.toString(16) + CRLF)
+			ret = this.#writeRaw(data) && ret
+			ret = this.#writeRaw(CRLF, callback) && ret
+			return ret
 		}
+		return this.#writeRaw(chunk, callback)
 	}
 
 	#writeRaw(data, callback) {
-		if (!this.#connected) {
-			this.#writeQueue.push({ data, callback })
-			return
+		const chunk = typeof data === 'string' ? new TextEncoder().encode(data) : data
+		const size = chunk.byteLength ?? chunk.length ?? 0
+		if (!this.#connected || this.#socketBackpressured || this.#writeQueue.length > this.#writeQueueOffset) {
+			this.#writeQueue.push({ data: chunk, callback, size })
+			this.#queuedBytes += size
+			return this.#queuedBytes < this.#highWaterMark
 		}
-		this.#socket.write(data, callback)
+		return this.#writeNow(chunk, callback)
 	}
 
 	#flush() {
-		while (this.#writeQueue.length > 0) {
-			const { data, callback } = this.#writeQueue.shift()
-			this.#socket.write(data, callback)
+		if (!this.#connected || this.#destroyed) return
+		while (this.#writeQueueOffset < this.#writeQueue.length) {
+			const { data, callback, size } = this.#writeQueue[this.#writeQueueOffset++]
+			this.#queuedBytes -= size
+			const ret = this.#writeNow(data, callback)
+			if (!ret) break
 		}
+		if (this.#writeQueueOffset > 1024 || this.#writeQueueOffset === this.#writeQueue.length) {
+			this.#writeQueue = this.#writeQueue.slice(this.#writeQueueOffset)
+			this.#writeQueueOffset = 0
+		}
+		this.#maybeFinishRequest()
+	}
+
+	#writeNow(data, callback) {
+		this.#pendingWrites++
+		const ret = this.#socket.write(data, (err) => {
+			this.#pendingWrites--
+			if (callback) callback(err || null)
+			if (err) this.#emitError(err)
+			this.#maybeFinishRequest()
+		})
+		if (!ret) this.#socketBackpressured = true
+		return ret
+	}
+
+	#maybeFinishRequest() {
+		if (!this.#ended || this.#finished || this.#destroyed || this.#errored) return
+		if (this.#writeQueue.length > this.#writeQueueOffset || this.#pendingWrites > 0) return
+		this.#finished = true
+		if (this.#finishCallback) this.#finishCallback()
+		this.emit('finish')
+		this.#readResponse()
 	}
 
 	async #readResponse() {
+		if (this.#readingResponse || this.#destroyed) return
+		this.#readingResponse = true
 		try {
 			const reader = socketReader(this.#socket)
 			const head = await readResponseHead(reader)
 			if (!head) {
-				this.emit('error', new Error('socket hang up'))
+				if (!this.#errored && !this.#destroyed) this.#emitError(new Error('socket hang up'))
 				return
 			}
 
@@ -525,16 +594,21 @@ export class ClientRequest extends EventEmitter {
 			res.headers = headersToObject(head.headers)
 			res.rawHeaders = head.rawHeaders
 
-			const transferEncoding = head.headers.get('transfer-encoding') || ''
-			const contentLengthHeader = head.headers.get('content-length')
-			const isChunked = transferEncoding.toLowerCase().split(/\s*,\s*/).includes('chunked')
-			const contentLength = contentLengthHeader !== null ? Number(contentLengthHeader) : null
-			res._setBody(bodyStream(reader, head.leftover, contentLength, isChunked))
+			const { contentLength, isChunked } = responseBodyFraming(head, this.#method)
+			res._setBody(bodyStream(reader, head.leftover, contentLength, isChunked), {
+				destroyIfUnconsumedAfter: 300_000,
+			})
 
 			this.emit('response', res)
 		} catch (err) {
-			this.emit('error', err instanceof Error ? err : new Error(String(err)))
+			if (!this.#destroyed) this.#emitError(err instanceof Error ? err : new Error(String(err)))
 		}
+	}
+
+	#emitError(err) {
+		if (this.#errored) return
+		this.#errored = true
+		this.emit('error', err)
 	}
 }
 

@@ -350,6 +350,38 @@ describe('node:net Server', () => {
 			assert.equal(lines[1], 'uds:hello')
 		})
 	})
+
+	testQnOnly('Unix domain socket listen failure cleans up server state', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createServer } from 'node:net'
+			import { unlinkSync } from 'node:fs'
+
+			const path = ${JSON.stringify(`${dir}/busy.sock`)}
+			try { unlinkSync(path) } catch {}
+
+			const first = createServer()
+			const second = createServer()
+
+			first.listen(path, () => {
+				second.on('error', (err) => {
+					console.log(err.code)
+					console.log(second.listening)
+					console.log(second.address())
+					second.close()
+					first.close(() => {
+						try { unlinkSync(path) } catch {}
+					})
+				})
+				second.listen(path)
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			assert.equal(lines[0], 'EADDRINUSE')
+			assert.equal(lines[1], 'false')
+			assert.equal(lines[2], 'null')
+		})
+	})
 })
 
 describe('node:net Socket client', () => {

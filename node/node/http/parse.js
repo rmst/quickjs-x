@@ -20,24 +20,36 @@ export function socketReader(socket) {
 	const pending = []
 	let waiter = null
 	let ended = false
+	let closed = false
 
-	socket.on('data', (chunk) => {
+	const maybeResume = () => {
+		if (!closed && !ended && pending.length === 0 && socket.isPaused) {
+			socket.resume()
+		}
+	}
+
+	const onData = (chunk) => {
 		if (waiter) {
 			const resolve = waiter
 			waiter = null
 			resolve(chunk)
 		} else {
 			pending.push(chunk)
+			socket.pause()
 		}
-	})
-	socket.on('end', () => {
+	}
+	const onEnd = () => {
 		ended = true
 		if (waiter) { const r = waiter; waiter = null; r(null) }
-	})
-	socket.on('error', () => {
+	}
+	const onError = () => {
 		ended = true
 		if (waiter) { const r = waiter; waiter = null; r(null) }
-	})
+	}
+
+	socket.on('data', onData)
+	socket.on('end', onEnd)
+	socket.on('error', onError)
 
 	return {
 		async read(buf, off, len) {
@@ -53,9 +65,14 @@ export function socketReader(socket) {
 			const n = Math.min(chunk.length, len)
 			new Uint8Array(buf, off, n).set(chunk.subarray(0, n))
 			if (chunk.length > n) pending.unshift(chunk.subarray(n))
+			else maybeResume()
 			return n
 		},
 		close() {
+			closed = true
+			socket.off('data', onData)
+			socket.off('end', onEnd)
+			socket.off('error', onError)
 			socket.destroy()
 		},
 	}
@@ -403,6 +420,23 @@ export function chunkedRequestBodyStream(reader, leftover) {
 			return readChunkedBody(reader, leftover)[Symbol.asyncIterator]()
 		},
 	}
+}
+
+export function responseBodyFraming(head, method = 'GET') {
+	const connHeader = (head.headers.get('connection') || '').toLowerCase()
+	const connTokens = connHeader.split(/\s*,\s*/)
+	const transferEncoding = head.headers.get('transfer-encoding')
+	const contentLengthHeader = head.headers.get('content-length')
+	const noBody = method === 'HEAD' || head.status === 204 || head.status === 304
+	const isChunked = !noBody && !!(transferEncoding && transferEncoding.toLowerCase().includes('chunked'))
+	const parsedContentLength = contentLengthHeader !== null ? parseInt(contentLengthHeader, 10) : null
+	const contentLength = noBody ? 0
+		: Number.isFinite(parsedContentLength) ? parsedContentLength
+			: null
+	const isFramed = isChunked || contentLength !== null
+	const keepAlive = !connTokens.includes('close') && isFramed
+
+	return { contentLength, isChunked, isFramed, keepAlive, noBody }
 }
 
 /**

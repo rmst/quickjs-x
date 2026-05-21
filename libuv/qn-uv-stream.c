@@ -247,7 +247,10 @@ static void qn_connection_cb(uv_stream_t *server, int status) {
 	}
 
 	JSValue obj = qn_stream_wrap(ctx, client);
-	if (JS_IsException(obj)) return;
+	if (JS_IsException(obj)) {
+		uv_close(&client->h.handle, qn_stream_close_cb);
+		return;
+	}
 	qn_call_handler(ctx, s->on_connection, 1, &obj);
 	JS_FreeValue(ctx, obj);
 }

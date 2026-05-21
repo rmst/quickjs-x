@@ -471,6 +471,12 @@ export class Server extends EventEmitter {
 				this.#listening = true
 				queueMicrotask(() => this.emit('listening'))
 			} catch (e) {
+				if (this.#handle) {
+					try { _close(this.#handle) } catch {}
+					this.#handle = null
+				}
+				this.#pipe = false
+				this.#pipePath = null
 				queueMicrotask(() => {
 					if (this.listenerCount('error') > 0) {
 						this.emit('error', e)
