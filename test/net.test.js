@@ -323,6 +323,8 @@ describe('node:net Server', () => {
 			try { unlinkSync(path) } catch {}
 
 			const server = createServer((socket) => {
+				console.log('server-socket-address:' + JSON.stringify(socket.address()))
+				console.log('server-remote:' + socket.remoteAddress)
 				socket.on('data', (data) => {
 					socket.write('uds:' + data)
 					socket.end()
@@ -332,6 +334,8 @@ describe('node:net Server', () => {
 			server.listen(path, () => {
 				console.log('address:' + server.address())
 				const client = createConnection(path, () => {
+					console.log('client-address:' + JSON.stringify(client.address()))
+					console.log('client-remote:' + client.remoteAddress)
 					client.write('hello')
 				})
 				let body = ''
@@ -347,7 +351,11 @@ describe('node:net Server', () => {
 		return execAsync(bin, [`${dir}/test.js`]).then(output => {
 			const lines = output.split('\n')
 			assert.equal(lines[0], `address:${dir}/echo.sock`)
-			assert.equal(lines[1], 'uds:hello')
+			assert.equal(lines[1], 'server-socket-address:{}')
+			assert.equal(lines[2], 'server-remote:undefined')
+			assert.equal(lines[3], 'client-address:{}')
+			assert.equal(lines[4], 'client-remote:undefined')
+			assert.equal(lines[5], 'uds:hello')
 		})
 	})
 
@@ -378,6 +386,107 @@ describe('node:net Server', () => {
 		return execAsync(bin, [`${dir}/test.js`]).then(output => {
 			const lines = output.split('\n')
 			assert.equal(lines[0], 'EADDRINUSE')
+			assert.equal(lines[1], 'false')
+			assert.equal(lines[2], 'null')
+		})
+	})
+
+	testQnOnly('Unix domain socket failed connect closes the socket', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createConnection } from 'node:net'
+
+			const path = ${JSON.stringify(`${dir}/missing.sock`)}
+			const client = createConnection(path)
+			client.on('error', (err) => {
+				console.log(err.code)
+			})
+			client.on('close', () => {
+				console.log(client.destroyed)
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			assert.equal(lines[0], 'ENOENT')
+			assert.equal(lines[1], 'true')
+		})
+	})
+
+	testQnOnly('Unix domain socket can listen again after close', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createServer } from 'node:net'
+			import { unlinkSync } from 'node:fs'
+
+			const path = ${JSON.stringify(`${dir}/again.sock`)}
+			try { unlinkSync(path) } catch {}
+
+			const first = createServer()
+			first.listen(path, () => {
+				first.close(() => {
+					try { unlinkSync(path) } catch {}
+					const second = createServer()
+					second.listen(path, () => {
+						console.log(second.address())
+						second.close(() => {
+							try { unlinkSync(path) } catch {}
+						})
+					})
+				})
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.equal(output, `${dir}/again.sock`)
+		})
+	})
+
+	testQnOnly('Linux abstract Unix domain socket path supports NUL byte', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createServer, createConnection } from 'node:net'
+
+			if (process.platform !== 'linux') {
+				console.log('skipped')
+				process.exit(0)
+			}
+
+			const path = '\\0qn-abstract-' + process.pid
+			const server = createServer((socket) => {
+				socket.end('abstract-ok')
+			})
+
+			server.listen(path, () => {
+				console.log(JSON.stringify(server.address()))
+				const client = createConnection(path)
+				let body = ''
+				client.on('data', (chunk) => { body += chunk })
+				client.on('end', () => {
+					console.log(body)
+					server.close()
+				})
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			if (lines[0] === 'skipped') return
+			assert.match(JSON.parse(lines[0]), /^\0qn-abstract-/)
+			assert.equal(lines[1], 'abstract-ok')
+		})
+	})
+
+	testQnOnly('Unix domain socket long path errors instead of truncating', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createServer } from 'node:net'
+
+			const path = ${JSON.stringify(`${dir}/`)} + 'x'.repeat(200)
+			const server = createServer()
+			server.on('error', (err) => {
+				console.log(err.code)
+				console.log(server.listening)
+				console.log(server.address())
+			})
+			server.listen(path)
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			assert.equal(lines[0], 'EINVAL')
 			assert.equal(lines[1], 'false')
 			assert.equal(lines[2], 'null')
 		})

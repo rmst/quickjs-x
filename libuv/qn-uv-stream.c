@@ -602,9 +602,10 @@ static JSValue js_uv_stream_op(JSContext *ctx, JSValueConst this_val,
 	case STREAM_PIPE_BIND: {
 		QNStream *s = qn_stream_get(ctx, args[0]);
 		if (!s) return JS_EXCEPTION;
-		const char *path = JS_ToCString(ctx, args[1]);
+		size_t path_len;
+		const char *path = JS_ToCStringLen(ctx, &path_len, args[1]);
 		if (!path) return JS_EXCEPTION;
-		int r = uv_pipe_bind(&s->h.pipe, path);
+		int r = uv_pipe_bind2(&s->h.pipe, path, path_len, UV_PIPE_NO_TRUNCATE);
 		JS_FreeCString(ctx, path);
 		if (r < 0) return qn_throw_errno(ctx, r);
 		return JS_UNDEFINED;
@@ -613,15 +614,20 @@ static JSValue js_uv_stream_op(JSContext *ctx, JSValueConst this_val,
 	case STREAM_PIPE_CONNECT: {
 		QNStream *s = qn_stream_get(ctx, args[0]);
 		if (!s) return JS_EXCEPTION;
-		const char *path = JS_ToCString(ctx, args[1]);
+		size_t path_len;
+		const char *path = JS_ToCStringLen(ctx, &path_len, args[1]);
 		if (!path) return JS_EXCEPTION;
 		uv_connect_t *creq = malloc(sizeof(*creq));
 		if (!creq) {
 			JS_FreeCString(ctx, path);
 			return JS_ThrowOutOfMemory(ctx);
 		}
-		uv_pipe_connect(creq, &s->h.pipe, path, qn_connect_cb);
+		int r = uv_pipe_connect2(creq, &s->h.pipe, path, path_len, UV_PIPE_NO_TRUNCATE, qn_connect_cb);
 		JS_FreeCString(ctx, path);
+		if (r < 0) {
+			free(creq);
+			return qn_throw_errno(ctx, r);
+		}
 		return JS_UNDEFINED;
 	}
 

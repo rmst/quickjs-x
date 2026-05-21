@@ -61,6 +61,13 @@ export class Socket extends EventEmitter {
 		super()
 		this.#allowHalfOpen = options.allowHalfOpen || false
 		this.#pipe = options._pipe || false
+		if (this.#pipe) {
+			this.remoteAddress = undefined
+			this.remotePort = undefined
+			this.remoteFamily = undefined
+			this.localAddress = undefined
+			this.localPort = undefined
+		}
 		if (options._handle !== undefined) {
 			this.#handle = options._handle
 			this.#connected = true
@@ -155,6 +162,11 @@ export class Socket extends EventEmitter {
 	#doPipeConnect(path) {
 		try {
 			this.#pipe = true
+			this.remoteAddress = undefined
+			this.remotePort = undefined
+			this.remoteFamily = undefined
+			this.localAddress = undefined
+			this.localPort = undefined
 			this.#handle = pipeNew()
 			setOnConnect(this.#handle, (err) => {
 				if (this.#destroyed) return
@@ -350,7 +362,7 @@ export class Socket extends EventEmitter {
 	address() {
 		if (!this.#handle) return null
 		try {
-			if (this.#pipe) return pipeGetsockname(this.#handle)
+			if (this.#pipe) return {}
 			return formatAddr(tcpGetsockname(this.#handle))
 		} catch (e) {
 			return null
