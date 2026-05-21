@@ -75,6 +75,13 @@ export function socketReader(socket) {
 			socket.off('error', onError)
 			socket.destroy()
 		},
+		detach() {
+			closed = true
+			socket.off('data', onData)
+			socket.off('end', onEnd)
+			socket.off('error', onError)
+			if (socket.isPaused) socket.resume()
+		},
 	}
 }
 
@@ -634,6 +641,7 @@ export async function handleHttpConnection(socket, options, onRequest, onUpgrade
 			if (onUpgrade) {
 				const headBuf = head.leftover && head.leftover.length > 0
 					? head.leftover : new Uint8Array(0)
+				reader.detach()
 				onUpgrade({ head, socket, headBuf })
 			} else {
 				socket.destroy()
