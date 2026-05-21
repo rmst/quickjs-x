@@ -151,20 +151,25 @@ export function parseResponseHead(data) {
 	const lines = headerText.split('\r\n')
 
 	const statusLine = lines[0] || ''
-	const statusMatch = statusLine.match(/^HTTP\/[\d.]+ (\d+)(?: (.*))?$/)
-	const status = statusMatch ? parseInt(statusMatch[1], 10) : 0
-	const statusText = statusMatch ? (statusMatch[2] || '') : ''
+	const statusMatch = statusLine.match(/^HTTP\/([\d.]+) (\d+)(?: (.*))?$/)
+	const httpVersion = statusMatch ? statusMatch[1] : ''
+	const status = statusMatch ? parseInt(statusMatch[2], 10) : 0
+	const statusText = statusMatch ? (statusMatch[3] || '') : ''
 
 	const headers = new Headers()
+	const rawHeaders = []
 	for (let i = 1; i < lines.length; i++) {
 		const line = lines[i]
 		const colonIdx = line.indexOf(':')
 		if (colonIdx > 0) {
-			headers.append(line.slice(0, colonIdx).trim(), line.slice(colonIdx + 1).trim())
+			const key = line.slice(0, colonIdx).trim()
+			const value = line.slice(colonIdx + 1).trim()
+			rawHeaders.push(key, value)
+			headers.append(key, value)
 		}
 	}
 
-	return { status, statusText, headers, bodyStart: headerEnd + 4 }
+	return { httpVersion, status, statusText, headers, rawHeaders, bodyStart: headerEnd + 4 }
 }
 
 /**
@@ -289,7 +294,9 @@ export async function readResponseHead(reader, maxSize = DEFAULT_MAX_HEADER_SIZE
 	return {
 		status: parsed.status,
 		statusText: parsed.statusText,
+		httpVersion: parsed.httpVersion,
 		headers: parsed.headers,
+		rawHeaders: parsed.rawHeaders,
 		leftover: accumulated.subarray(parsed.bodyStart),
 	}
 }

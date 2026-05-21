@@ -221,10 +221,23 @@ static void qn_connection_cb(uv_stream_t *server, int status) {
 		return;
 	}
 
-	/* Create a new TCP handle for the accepted connection */
+	/* Create a client handle matching the listening stream type. */
 	QNStream *client = qn_stream_new(ctx);
 	if (!client) return;
-	uv_tcp_init(js_uv_loop(ctx), &client->h.tcp);
+	int init_r;
+	if (server->type == UV_NAMED_PIPE) {
+		init_r = uv_pipe_init(js_uv_loop(ctx), &client->h.pipe, 0);
+	} else {
+		init_r = uv_tcp_init(js_uv_loop(ctx), &client->h.tcp);
+	}
+	if (init_r < 0) {
+		stream_unlink(client);
+		free(client);
+		JSValue err = qn_new_error(ctx, init_r);
+		qn_call_handler(ctx, s->on_connection, 1, &err);
+		JS_FreeValue(ctx, err);
+		return;
+	}
 	client->h.handle.data = client;
 
 	int r = uv_accept(server, &client->h.stream);
@@ -298,6 +311,10 @@ enum {
 	STREAM_SET_ON_SHUTDOWN,
 	STREAM_PIPE_NEW,
 	STREAM_PIPE_OPEN,
+	STREAM_PIPE_BIND,
+	STREAM_PIPE_CONNECT,
+	STREAM_PIPE_GETSOCKNAME,
+	STREAM_PIPE_GETPEERNAME,
 	STREAM_TTY_NEW,
 	STREAM_TTY_SET_MODE,
 	STREAM_TTY_GET_WINSIZE,
@@ -327,7 +344,11 @@ static JSValue js_uv_stream_op(JSContext *ctx, JSValueConst this_val,
 		QNStream *s = qn_stream_new(ctx);
 		if (!s) return JS_ThrowOutOfMemory(ctx);
 		int r = uv_tcp_init(loop, &s->h.tcp);
-		if (r < 0) { free(s); return qn_throw_errno(ctx, r); }
+		if (r < 0) {
+			stream_unlink(s);
+			free(s);
+			return qn_throw_errno(ctx, r);
+		}
 		return qn_stream_wrap(ctx, s);
 	}
 
@@ -557,7 +578,11 @@ static JSValue js_uv_stream_op(JSContext *ctx, JSValueConst this_val,
 		QNStream *s = qn_stream_new(ctx);
 		if (!s) return JS_ThrowOutOfMemory(ctx);
 		int r = uv_pipe_init(loop, &s->h.pipe, 0);
-		if (r < 0) { free(s); return qn_throw_errno(ctx, r); }
+		if (r < 0) {
+			stream_unlink(s);
+			free(s);
+			return qn_throw_errno(ctx, r);
+		}
 		return qn_stream_wrap(ctx, s);
 	}
 
@@ -569,6 +594,47 @@ static JSValue js_uv_stream_op(JSContext *ctx, JSValueConst this_val,
 		int r = uv_pipe_open(&s->h.pipe, fd);
 		if (r < 0) return qn_throw_errno(ctx, r);
 		return JS_UNDEFINED;
+	}
+
+	case STREAM_PIPE_BIND: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		const char *path = JS_ToCString(ctx, args[1]);
+		if (!path) return JS_EXCEPTION;
+		int r = uv_pipe_bind(&s->h.pipe, path);
+		JS_FreeCString(ctx, path);
+		if (r < 0) return qn_throw_errno(ctx, r);
+		return JS_UNDEFINED;
+	}
+
+	case STREAM_PIPE_CONNECT: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		const char *path = JS_ToCString(ctx, args[1]);
+		if (!path) return JS_EXCEPTION;
+		uv_connect_t *creq = malloc(sizeof(*creq));
+		if (!creq) {
+			JS_FreeCString(ctx, path);
+			return JS_ThrowOutOfMemory(ctx);
+		}
+		uv_pipe_connect(creq, &s->h.pipe, path, qn_connect_cb);
+		JS_FreeCString(ctx, path);
+		return JS_UNDEFINED;
+	}
+
+	case STREAM_PIPE_GETSOCKNAME:
+	case STREAM_PIPE_GETPEERNAME: {
+		QNStream *s = qn_stream_get(ctx, args[0]);
+		if (!s) return JS_EXCEPTION;
+		char buf[4096];
+		size_t len = sizeof(buf);
+		int r;
+		if (op == STREAM_PIPE_GETSOCKNAME)
+			r = uv_pipe_getsockname(&s->h.pipe, buf, &len);
+		else
+			r = uv_pipe_getpeername(&s->h.pipe, buf, &len);
+		if (r < 0) return qn_throw_errno(ctx, r);
+		return JS_NewStringLen(ctx, buf, len);
 	}
 
 	case STREAM_TTY_NEW: {
@@ -661,6 +727,10 @@ static const JSCFunctionListEntry js_uv_stream_funcs[] = {
 	QN_CONST2("SET_ON_SHUTDOWN", STREAM_SET_ON_SHUTDOWN),
 	QN_CONST2("PIPE_NEW", STREAM_PIPE_NEW),
 	QN_CONST2("PIPE_OPEN", STREAM_PIPE_OPEN),
+	QN_CONST2("PIPE_BIND", STREAM_PIPE_BIND),
+	QN_CONST2("PIPE_CONNECT", STREAM_PIPE_CONNECT),
+	QN_CONST2("PIPE_GETSOCKNAME", STREAM_PIPE_GETSOCKNAME),
+	QN_CONST2("PIPE_GETPEERNAME", STREAM_PIPE_GETPEERNAME),
 	QN_CONST2("TTY_NEW", STREAM_TTY_NEW),
 	QN_CONST2("TTY_SET_MODE", STREAM_TTY_SET_MODE),
 	QN_CONST2("TTY_GET_WINSIZE", STREAM_TTY_GET_WINSIZE),

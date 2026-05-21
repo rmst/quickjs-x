@@ -313,6 +313,43 @@ describe('node:net Server', () => {
 			serverProc.catch(() => {}) // ignore server exit error from kill
 		})
 	})
+
+	testQnOnly('Unix domain socket server accepts connections', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createServer, createConnection } from 'node:net'
+			import { unlinkSync } from 'node:fs'
+
+			const path = ${JSON.stringify(`${dir}/echo.sock`)}
+			try { unlinkSync(path) } catch {}
+
+			const server = createServer((socket) => {
+				socket.on('data', (data) => {
+					socket.write('uds:' + data)
+					socket.end()
+				})
+			})
+
+			server.listen(path, () => {
+				console.log('address:' + server.address())
+				const client = createConnection(path, () => {
+					client.write('hello')
+				})
+				let body = ''
+				client.on('data', (chunk) => { body += chunk })
+				client.on('end', () => {
+					console.log(body)
+					server.close(() => {
+						try { unlinkSync(path) } catch {}
+					})
+				})
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			assert.equal(lines[0], `address:${dir}/echo.sock`)
+			assert.equal(lines[1], 'uds:hello')
+		})
+	})
 })
 
 describe('node:net Socket client', () => {

@@ -5,13 +5,66 @@
 
 import { EventEmitter } from 'node:events'
 import { Buffer } from 'node:buffer'
-import { createServer as createTcpServer, Socket } from 'node:net'
-import { handleHttpConnection } from 'node:http/parse'
+import { createConnection, createServer as createTcpServer, Socket } from 'node:net'
+import {
+	bodyStream, buildRequest, handleHttpConnection, readResponseHead, socketReader,
+} from 'node:http/parse'
 
 const CRLF = '\r\n'
 
 const DEFAULT_HEADER_TIMEOUT = 60_000  // 60 seconds
 const DEFAULT_KEEP_ALIVE_TIMEOUT = 5_000  // 5 seconds
+
+function headersToObject(headers) {
+	const out = {}
+	for (const [key, value] of headers) {
+		out[key.toLowerCase()] = value
+	}
+	return out
+}
+
+function normalizeRequestArgs(input, options, callback) {
+	if (typeof options === 'function') {
+		callback = options
+		options = undefined
+	}
+
+	let opts = {}
+	if (typeof input === 'string' || input instanceof URL) {
+		const url = new URL(input)
+		opts.protocol = url.protocol
+		opts.hostname = url.hostname
+		opts.host = url.hostname
+		opts.port = url.port ? Number(url.port) : undefined
+		opts.path = `${url.pathname || '/'}${url.search || ''}`
+		if (url.username || url.password) {
+			opts.auth = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`
+		}
+		opts = { ...opts, ...(options || {}) }
+	} else {
+		opts = { ...(input || {}) }
+	}
+
+	return { options: opts, callback }
+}
+
+function normalizeHeaders(headers = {}) {
+	const out = new Map()
+	if (headers instanceof Map || Array.isArray(headers)) {
+		for (const [key, value] of headers) out.set(String(key).toLowerCase(), { key: String(key), value: String(value) })
+		return out
+	}
+	for (const [key, value] of Object.entries(headers)) {
+		out.set(key.toLowerCase(), { key, value: String(value) })
+	}
+	return out
+}
+
+function byteLength(data) {
+	if (typeof data === 'string') return new TextEncoder().encode(data).byteLength
+	if (data instanceof Uint8Array) return data.byteLength
+	return new Uint8Array(data).byteLength
+}
 
 /**
  * Incoming HTTP message (request on server, response on client)
@@ -304,6 +357,187 @@ export class ServerResponse extends EventEmitter {
 	}
 }
 
+export class ClientRequest extends EventEmitter {
+	#options
+	#headers
+	#socket = null
+	#connected = false
+	#headerSent = false
+	#ended = false
+	#chunked = false
+	#writeQueue = []
+	#method
+	#path
+	#host
+	#port
+	#socketPath
+
+	constructor(input, options, callback) {
+		super()
+		const normalized = normalizeRequestArgs(input, options, callback)
+		this.#options = normalized.options
+		this.#headers = normalizeHeaders(this.#options.headers)
+		this.#method = String(this.#options.method || 'GET').toUpperCase()
+		this.#path = this.#options.path || '/'
+		this.#socketPath = this.#options.socketPath
+		this.#host = this.#options.hostname || this.#options.host || 'localhost'
+		this.#port = this.#options.port ? Number(this.#options.port) : 80
+
+		if (normalized.callback) this.once('response', normalized.callback)
+		this.#connect()
+	}
+
+	setHeader(name, value) {
+		if (this.#headerSent) throw new Error('Cannot set headers after they are sent')
+		this.#headers.set(String(name).toLowerCase(), { key: String(name), value: String(value) })
+		return this
+	}
+
+	getHeader(name) {
+		return this.#headers.get(String(name).toLowerCase())?.value
+	}
+
+	removeHeader(name) {
+		if (this.#headerSent) throw new Error('Cannot remove headers after they are sent')
+		this.#headers.delete(String(name).toLowerCase())
+	}
+
+	write(chunk, encoding, callback) {
+		if (typeof encoding === 'function') {
+			callback = encoding
+			encoding = undefined
+		}
+		if (this.#ended) {
+			const err = new Error('write after end')
+			if (callback) callback(err)
+			this.emit('error', err)
+			return false
+		}
+		this.#sendHead(true)
+		this.#writeBody(chunk, callback)
+		return true
+	}
+
+	end(data, encoding, callback) {
+		if (typeof data === 'function') {
+			callback = data
+			data = undefined
+		}
+		if (typeof encoding === 'function') {
+			callback = encoding
+			encoding = undefined
+		}
+		if (this.#ended) return this
+		this.#ended = true
+
+		if (data !== undefined && data !== null && !this.#headerSent && !this.getHeader('content-length')) {
+			this.setHeader('Content-Length', byteLength(data))
+		}
+
+		this.#sendHead(data !== undefined && data !== null)
+		if (data !== undefined && data !== null) this.#writeBody(data)
+		if (this.#chunked) this.#writeRaw('0\r\n\r\n')
+		if (callback) queueMicrotask(callback)
+		this.#readResponse()
+		return this
+	}
+
+	abort() {
+		this.destroy()
+	}
+
+	destroy(err) {
+		if (this.#socket) this.#socket.destroy(err)
+		else if (err) this.emit('error', err)
+		return this
+	}
+
+	#connect() {
+		const connectOptions = this.#socketPath
+			? { path: this.#socketPath }
+			: { host: this.#host, port: this.#port }
+		this.#socket = createConnection(connectOptions, () => {
+			this.#connected = true
+			this.emit('socket', this.#socket)
+			this.#flush()
+		})
+		this.#socket.on('error', (err) => this.emit('error', err))
+		this.#socket.on('close', () => this.emit('close'))
+	}
+
+	#sendHead(hasBody) {
+		if (this.#headerSent) return
+		if (hasBody && !this.getHeader('content-length')) {
+			this.#headers.set('transfer-encoding', { key: 'Transfer-Encoding', value: 'chunked' })
+			this.#chunked = true
+		}
+		const req = buildRequest(
+			this.#method,
+			this.#path,
+			this.#headers.get('host')?.value || this.#host,
+			this.#port,
+			Array.from(this.#headers.values()).map(({ key, value }) => [key, value]),
+			this.#port === 80,
+		)
+		this.#headerSent = true
+		this.#writeRaw(req)
+	}
+
+	#writeBody(chunk, callback) {
+		if (this.#chunked) {
+			const data = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk
+			this.#writeRaw(data.byteLength.toString(16) + CRLF)
+			this.#writeRaw(data)
+			this.#writeRaw(CRLF, callback)
+		} else {
+			this.#writeRaw(chunk, callback)
+		}
+	}
+
+	#writeRaw(data, callback) {
+		if (!this.#connected) {
+			this.#writeQueue.push({ data, callback })
+			return
+		}
+		this.#socket.write(data, callback)
+	}
+
+	#flush() {
+		while (this.#writeQueue.length > 0) {
+			const { data, callback } = this.#writeQueue.shift()
+			this.#socket.write(data, callback)
+		}
+	}
+
+	async #readResponse() {
+		try {
+			const reader = socketReader(this.#socket)
+			const head = await readResponseHead(reader)
+			if (!head) {
+				this.emit('error', new Error('socket hang up'))
+				return
+			}
+
+			const res = new IncomingMessage(this.#socket)
+			res.statusCode = head.status
+			res.statusMessage = head.statusText
+			res.httpVersion = head.httpVersion
+			res.headers = headersToObject(head.headers)
+			res.rawHeaders = head.rawHeaders
+
+			const transferEncoding = head.headers.get('transfer-encoding') || ''
+			const contentLengthHeader = head.headers.get('content-length')
+			const isChunked = transferEncoding.toLowerCase().split(/\s*,\s*/).includes('chunked')
+			const contentLength = contentLengthHeader !== null ? Number(contentLengthHeader) : null
+			res._setBody(bodyStream(reader, head.leftover, contentLength, isChunked))
+
+			this.emit('response', res)
+		} catch (err) {
+			this.emit('error', err instanceof Error ? err : new Error(String(err)))
+		}
+	}
+}
+
 /**
  * HTTP Server
  *
@@ -449,6 +683,16 @@ export function createServer(options, requestListener) {
 	return new HTTPServer(options, requestListener)
 }
 
+export function request(input, options, callback) {
+	return new ClientRequest(input, options, callback)
+}
+
+export function get(input, options, callback) {
+	const req = request(input, options, callback)
+	req.end()
+	return req
+}
+
 const STATUS_CODES = {
 	100: 'Continue', 101: 'Switching Protocols',
 	200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
@@ -467,6 +711,9 @@ export { STATUS_CODES }
 
 export default {
 	createServer,
+	request,
+	get,
+	ClientRequest,
 	Server: HTTPServer,
 	IncomingMessage,
 	ServerResponse,

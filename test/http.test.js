@@ -4,6 +4,124 @@ import { writeFileSync } from 'node:fs'
 import { test, testQnOnly, execAsync } from './util.js'
 
 describe('node:http Server', () => {
+	testQnOnly('http.get receives response over TCP', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+
+			const server = http.createServer((req, res) => {
+				res.writeHead(201, { 'Content-Type': 'text/plain', 'X-Path': req.url })
+				res.end('hello client')
+			})
+
+			server.listen(0, '127.0.0.1', () => {
+				const { port } = server.address()
+				http.get({ host: '127.0.0.1', port, path: '/events' }, (res) => {
+					let body = ''
+					res.on('data', (chunk) => { body += chunk })
+					res.on('end', () => {
+						console.log(res.statusCode)
+						console.log(res.headers['x-path'])
+						console.log(body)
+						server.close()
+					})
+				})
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			const lines = output.split('\n')
+			assert.equal(lines[0], '201')
+			assert.equal(lines[1], '/events')
+			assert.equal(lines[2], 'hello client')
+		})
+	})
+
+	testQnOnly('http.request sends request body over TCP', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+
+			const server = http.createServer((req, res) => {
+				let body = ''
+				req.on('data', (chunk) => { body += chunk })
+				req.on('end', () => {
+					res.end(req.method + ' ' + req.url + ' ' + body)
+				})
+			})
+
+			server.listen(0, '127.0.0.1', () => {
+				const { port } = server.address()
+				const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/submit' }, (res) => {
+					let body = ''
+					res.on('data', (chunk) => { body += chunk })
+					res.on('end', () => {
+						console.log(body)
+						server.close()
+					})
+				})
+				req.end('payload')
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.equal(output, 'POST /submit payload')
+		})
+	})
+
+	testQnOnly('http client decodes chunked responses', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+
+			const server = http.createServer((req, res) => {
+				res.write('alpha')
+				res.write('beta')
+				res.end('gamma')
+			})
+
+			server.listen(0, '127.0.0.1', () => {
+				const { port } = server.address()
+				http.get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+					let body = ''
+					res.on('data', (chunk) => { body += chunk })
+					res.on('end', () => {
+						console.log(body)
+						server.close()
+					})
+				})
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.equal(output, 'alphabetagamma')
+		})
+	})
+
+	testQnOnly('http.request supports socketPath', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+			import { unlinkSync } from 'node:fs'
+
+			const socketPath = ${JSON.stringify(`${dir}/http.sock`)}
+			try { unlinkSync(socketPath) } catch {}
+
+			const server = http.createServer((req, res) => {
+				res.end('socket:' + req.url)
+			})
+
+			server.listen(socketPath, () => {
+				http.get({ socketPath, path: '/status' }, (res) => {
+					let body = ''
+					res.on('data', (chunk) => { body += chunk })
+					res.on('end', () => {
+						console.log(body)
+						server.close(() => {
+							try { unlinkSync(socketPath) } catch {}
+						})
+					})
+				})
+			})
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.equal(output, 'socket:/status')
+		})
+	})
+
 	testQnOnly('basic GET request', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import http from 'node:http'

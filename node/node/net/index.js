@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events'
 import { Buffer } from 'node:buffer'
 import {
 	tcpNew, tcpBind, listen as _listen, tcpConnect,
+	pipeNew, pipeBind, pipeConnect, pipeGetsockname, pipeGetpeername,
 	readStart, readStop, write as _write, shutdown as _shutdown, close as _close,
 	fileno, tcpNodelay, tcpKeepalive,
 	tcpGetsockname, tcpGetpeername,
@@ -24,6 +25,7 @@ export { AF_INET, AF_INET6 }
  * Node.js net expects { address, port, family: "IPv4"|"IPv6" } */
 function formatAddr(raw) {
 	if (!raw) return null
+	if (typeof raw === 'string') return raw
 	return {
 		address: raw.ip,
 		port: raw.port,
@@ -48,6 +50,7 @@ export class Socket extends EventEmitter {
 	#allowHalfOpen = false
 	#paused = false
 	#unshiftBuf = null
+	#pipe = false
 	remoteAddress = null
 	remotePort = null
 	remoteFamily = null
@@ -57,6 +60,7 @@ export class Socket extends EventEmitter {
 	constructor(options = {}) {
 		super()
 		this.#allowHalfOpen = options.allowHalfOpen || false
+		this.#pipe = options._pipe || false
 		if (options._handle !== undefined) {
 			this.#handle = options._handle
 			this.#connected = true
@@ -75,6 +79,7 @@ export class Socket extends EventEmitter {
 	}
 
 	#setupRemoteInfo() {
+		if (this.#pipe) return
 		try {
 			const peer = formatAddr(tcpGetpeername(this.#handle))
 			if (peer) {
@@ -136,13 +141,37 @@ export class Socket extends EventEmitter {
 
 		const port = options.port
 		const host = options.host || '127.0.0.1'
+		const path = options.path
 
 		if (callback) this.once('connect', callback)
 
 		this.#connecting = true
-		this.#doConnect(host, port)
+		if (path !== undefined) this.#doPipeConnect(path)
+		else this.#doConnect(host, port)
 
 		return this
+	}
+
+	#doPipeConnect(path) {
+		try {
+			this.#pipe = true
+			this.#handle = pipeNew()
+			setOnConnect(this.#handle, (err) => {
+				if (this.#destroyed) return
+				if (err) {
+					this.#connecting = false
+					this.#emitError(err)
+					return
+				}
+				this.#connecting = false
+				this.#connected = true
+				this.#startReading()
+				this.emit('connect')
+			})
+			pipeConnect(this.#handle, path)
+		} catch (e) {
+			this.#emitError(e)
+		}
 	}
 
 	async #doConnect(host, port) {
@@ -303,6 +332,7 @@ export class Socket extends EventEmitter {
 	}
 
 	setNoDelay(noDelay = true) {
+		if (this.#pipe) return this
 		if (this.#handle) {
 			tcpNodelay(this.#handle, noDelay)
 		}
@@ -310,6 +340,7 @@ export class Socket extends EventEmitter {
 	}
 
 	setKeepAlive(enable = false) {
+		if (this.#pipe) return this
 		if (this.#handle) {
 			tcpKeepalive(this.#handle, enable)
 		}
@@ -319,6 +350,7 @@ export class Socket extends EventEmitter {
 	address() {
 		if (!this.#handle) return null
 		try {
+			if (this.#pipe) return pipeGetsockname(this.#handle)
 			return formatAddr(tcpGetsockname(this.#handle))
 		} catch (e) {
 			return null
@@ -381,6 +413,8 @@ export class Server extends EventEmitter {
 	#listening = false
 	#closed = false
 	#connections = new Set()
+	#pipe = false
+	#pipePath = null
 
 	constructor(options, connectionListener) {
 		super()
@@ -400,6 +434,52 @@ export class Server extends EventEmitter {
 			port = options.port
 			host = options.host
 			backlog = options.backlog
+			if (options.path !== undefined) port = options.path
+		}
+		if (typeof port === 'string') {
+			const path = port
+			if (typeof host === 'function') {
+				callback = host
+				backlog = undefined
+			} else if (typeof host === 'number') {
+				if (typeof backlog === 'function') callback = backlog
+				backlog = host
+			} else if (typeof backlog === 'function') {
+				callback = backlog
+				backlog = undefined
+			}
+			backlog = backlog || 128
+			if (callback) this.once('listening', callback)
+			try {
+				this.#pipe = true
+				this.#pipePath = path
+				this.#handle = pipeNew()
+				pipeBind(this.#handle, path)
+				setOnConnection(this.#handle, (clientHandle) => {
+					if (clientHandle instanceof Error) {
+						if (this.listenerCount('error') > 0) {
+							this.emit('error', clientHandle)
+						}
+						return
+					}
+					const sock = new Socket({ _handle: clientHandle, _pipe: true })
+					this.#connections.add(sock)
+					sock.on('close', () => this.#connections.delete(sock))
+					this.emit('connection', sock)
+				})
+				_listen(this.#handle, backlog)
+				this.#listening = true
+				queueMicrotask(() => this.emit('listening'))
+			} catch (e) {
+				queueMicrotask(() => {
+					if (this.listenerCount('error') > 0) {
+						this.emit('error', e)
+					} else {
+						throw e
+					}
+				})
+			}
+			return this
 		}
 		if (typeof host === 'function') {
 			callback = host
@@ -454,8 +534,10 @@ export class Server extends EventEmitter {
 	address() {
 		if (!this.#handle) return null
 		try {
+			if (this.#pipe) return pipeGetsockname(this.#handle) || this.#pipePath
 			return formatAddr(tcpGetsockname(this.#handle))
 		} catch (e) {
+			if (this.#pipe) return this.#pipePath
 			return null
 		}
 	}

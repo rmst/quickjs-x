@@ -11,7 +11,7 @@ import {
 	READ_START, READ_STOP, WRITE, SHUTDOWN, CLOSE, FILENO,
 	TCP_NODELAY, TCP_KEEPALIVE, TCP_GETSOCKNAME, TCP_GETPEERNAME,
 	SET_ON_READ, SET_ON_CONNECTION, SET_ON_CONNECT, SET_ON_SHUTDOWN,
-	PIPE_NEW, PIPE_OPEN,
+	PIPE_NEW, PIPE_OPEN, PIPE_BIND, PIPE_CONNECT, PIPE_GETSOCKNAME, PIPE_GETPEERNAME,
 	TTY_NEW, TTY_SET_MODE, TTY_GET_WINSIZE, TTY_RESET_MODE,
 	TTY_MODE_NORMAL, TTY_MODE_RAW, TTY_MODE_IO,
 	REF, UNREF,
@@ -44,6 +44,10 @@ export const tcpGetpeername = (handle) => _op(TCP_GETPEERNAME, handle)
 /* Pipe handles */
 export const pipeNew        = () => _op(PIPE_NEW)
 export const pipeOpen       = (handle, fd) => _op(PIPE_OPEN, handle, fd)
+export const pipeBind       = (handle, path) => _op(PIPE_BIND, handle, path)
+export const pipeConnect    = (handle, path) => _op(PIPE_CONNECT, handle, path)
+export const pipeGetsockname = (handle) => _op(PIPE_GETSOCKNAME, handle)
+export const pipeGetpeername = (handle) => _op(PIPE_GETPEERNAME, handle)
 
 /* TTY handles */
 export const ttyNew         = (fd, readable) => _op(TTY_NEW, fd, readable)

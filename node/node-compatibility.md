@@ -203,7 +203,7 @@ Notes: `utf8` is the only supported text encoding (no latin1, hex, base64, etc.)
 | `allowHalfOpen` | ✅ | |
 | `Socket.setTimeout` / `setEncoding` | ❌ | |
 | `isIP` / `isIPv4` / `isIPv6` | ❌ | |
-| Unix domain sockets | ❌ | |
+| Unix domain sockets | ✅ | `connect(path)`, `createConnection(path)`, `server.listen(path)` |
 
 ### node:dgram
 
@@ -228,7 +228,7 @@ Notes: `utf8` is the only supported text encoding (no latin1, hex, base64, etc.)
 | Header/keep-alive timeouts | ✅ | |
 | Upgrade support (WebSocket) | ✅ | |
 | CRLF injection validation | ✅ | |
-| `http.request` / `http.get` (client) | ❌ | Use `fetch` |
+| `http.request` / `http.get` (client) | ✅ | Basic HTTP/1.1 over TCP and `socketPath`; no Agent pooling |
 | `http.Agent` | ❌ | |
 
 ### node:child_process
