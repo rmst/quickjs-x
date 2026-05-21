@@ -81,6 +81,54 @@ describe('qn:proxy', () => {
 		assert.strictEqual(result.text, 'echo:hello world')
 	})
 
+	testQnOnly('streams Content-Length request bodies without buffering', async ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+			import { createConnection } from 'node:net'
+			import { createProxy } from 'qn:proxy'
+
+			const backend = http.createServer((req, res) => {
+				req.once('data', (chunk) => {
+					res.writeHead(200, { 'content-type': 'text/plain' })
+					res.end('early:' + chunk)
+				})
+			})
+			await new Promise(r => backend.listen(0, '127.0.0.1', r))
+			const backendPort = backend.address().port
+
+			const proxy = await createProxy({
+				port: 0,
+				hostname: '127.0.0.1',
+				route: () => \`http://127.0.0.1:\${backendPort}\`,
+			})
+			const proxyPort = proxy.address().port
+
+			const result = await new Promise((resolve, reject) => {
+				const client = createConnection(proxyPort, '127.0.0.1')
+				const timer = setTimeout(() => reject(new Error('timed out waiting for early response')), 1000)
+				let data = ''
+				client.on('connect', () => {
+					client.write('POST /stream HTTP/1.1\\r\\nHost: proxy\\r\\nContent-Length: 10\\r\\nConnection: close\\r\\n\\r\\nhello')
+				})
+				client.on('data', (chunk) => {
+					data += chunk
+					if (data.includes('early:hello')) {
+						clearTimeout(timer)
+						client.destroy()
+						resolve(data)
+					}
+				})
+				client.on('error', (err) => { clearTimeout(timer); reject(err) })
+			})
+
+			console.log(result.includes('early:hello'))
+			await proxy.close()
+			backend.close()
+		`)
+		const output = await execAsync(bin, [`${dir}/test.js`])
+		assert.strictEqual(output, 'true')
+	})
+
 	testQnOnly('sets X-Forwarded-* headers', async ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import http from 'node:http'

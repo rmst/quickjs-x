@@ -515,7 +515,9 @@ export class ClientRequest extends EventEmitter {
 			this.#port === 80,
 		)
 		this.#headerSent = true
-		return this.#writeRaw(req)
+		const ret = this.#writeRaw(req)
+		this.#readResponse()
+		return ret
 	}
 
 	#writeBody(chunk, callback) {
@@ -573,7 +575,6 @@ export class ClientRequest extends EventEmitter {
 		this.#finished = true
 		if (this.#finishCallback) this.#finishCallback()
 		this.emit('finish')
-		this.#readResponse()
 	}
 
 	async #readResponse() {

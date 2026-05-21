@@ -97,6 +97,11 @@ async function forwardHTTP(req, res, target, timeout) {
 	headers['x-forwarded-proto'] = 'http'
 	headers['x-forwarded-host'] = req.headers.host || ''
 
+	if (url.protocol === 'http:') {
+		await forwardHTTPWithRequest(req, res, url, headers, timeout)
+		return
+	}
+
 	// Abort backend fetch if client disconnects or timeout expires
 	const abort = new AbortController()
 	req.socket.on('close', () => abort.abort())
@@ -145,6 +150,77 @@ async function forwardHTTP(req, res, target, timeout) {
 		}
 	}
 	res.end()
+}
+
+async function forwardHTTPWithRequest(req, res, url, headers, timeout) {
+	await new Promise((resolve, reject) => {
+		let settled = false
+		const fail = (err) => {
+			if (settled) return
+			settled = true
+			if (timer) clearTimeout(timer)
+			reject(err)
+		}
+		const done = () => {
+			if (settled) return
+			settled = true
+			if (timer) clearTimeout(timer)
+			resolve()
+		}
+
+		const backendReq = http.request({
+			host: url.hostname,
+			port: url.port ? Number(url.port) : 80,
+			path: `${url.pathname || '/'}${url.search || ''}`,
+			method: req.method,
+			headers,
+		}, async (backendRes) => {
+			try {
+				const resHeaders = {}
+				for (const [k, v] of Object.entries(backendRes.headers)) {
+					if (!HOP_BY_HOP.has(k.toLowerCase())) resHeaders[k] = v
+				}
+				res.writeHead(backendRes.statusCode, resHeaders)
+				for await (const chunk of backendRes) {
+					if (!res.write(chunk)) {
+						await new Promise(resolve => res.once('drain', resolve))
+					}
+				}
+				res.end()
+				done()
+			} catch (err) {
+				fail(err)
+			}
+		})
+
+		const timer = timeout > 0 ? setTimeout(() => {
+			const err = new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+			backendReq.destroy(err)
+			fail(err)
+		}, timeout) : null
+		if (timer?.unref) timer.unref()
+
+		req.socket.on('close', () => backendReq.destroy())
+		backendReq.on('error', fail)
+
+		;(async () => {
+			try {
+				if (req.method === 'GET' || req.method === 'HEAD') {
+					backendReq.end()
+					return
+				}
+				for await (const chunk of req) {
+					if (!backendReq.write(chunk)) {
+						await new Promise(resolve => backendReq.once('drain', resolve))
+					}
+				}
+				backendReq.end()
+			} catch (err) {
+				backendReq.destroy(err)
+				fail(err)
+			}
+		})()
+	})
 }
 
 function incomingBodyStream(req) {
@@ -209,12 +285,22 @@ function forwardWS(wss, req, socket, head, target) {
 		wss.handleUpgrade(req, socket, head, (client) => {
 			pipeWS(client, backend)
 			pipeWS(backend, client)
-			client.on('close', (code, reason) => backend.close(code, reason))
-			backend.on('close', (code, reason) => client.close(code, reason))
+			client.on('close', (code, reason) => {
+				if (isValidCloseCode(code)) backend.close(code, reason)
+				else backend.terminate()
+			})
+			backend.on('close', (code, reason) => {
+				if (isValidCloseCode(code)) client.close(code, reason)
+				else client.terminate()
+			})
 			client.on('error', () => backend.terminate())
 			backend.on('error', () => client.terminate())
 		})
 	})
+}
+
+function isValidCloseCode(code) {
+	return code === 1000 || (code >= 3000 && code <= 4999)
 }
 
 /** Pipe messages from src to dst with backpressure */
@@ -237,5 +323,3 @@ function filterHeaders(headers) {
 	}
 	return out
 }
-
-
