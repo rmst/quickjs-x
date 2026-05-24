@@ -804,7 +804,7 @@ export async function writeResponse(writeFn, response, options) {
 			await writeFn(encode('0\r\n\r\n'))
 		completed = true
 	} finally {
-		if (!completed) {
+		if (!completed && body) {
 			if (reader) await reader.cancel?.().catch(() => {})
 			else if (iter) await iter.return?.().catch(() => {})
 			else await body.cancel?.().catch(() => {})

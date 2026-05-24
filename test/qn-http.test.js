@@ -484,6 +484,37 @@ describe('qn:http serve()', () => {
 		assert.ok(JSON.parse(output).cancelled > 0)
 	})
 
+	testQnOnly('downstream disconnect during no-body response does not throw cleanup error', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { serve } from 'qn:http'
+			import { createConnection } from 'node:net'
+
+			let errors = []
+			const server = await serve({
+				port: 0,
+				hostname: '127.0.0.1',
+				onError: (err) => errors.push(err?.message || String(err)),
+			}, () => new Response(null, { status: 204 }))
+			const port = server.address().port
+
+			await new Promise((resolve, reject) => {
+				const client = createConnection(port, '127.0.0.1')
+				client.on('connect', () => {
+					client.write('GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n')
+					client.destroy()
+					resolve()
+				})
+				client.on('error', reject)
+			})
+
+			await new Promise(r => setTimeout(r, 50))
+			server.close()
+			console.log(JSON.stringify({ errors }))
+		`)
+		const output = $({ timeout: 5000 })`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { errors: [] })
+	})
+
 	testQnOnly('connection: close respected on first request', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { serve } from 'qn:http'
