@@ -101,6 +101,36 @@ describe('node:fs extended APIs', () => {
 		assert.deepStrictEqual(JSON.parse(output), { data: 'hello from createReadStream' })
 	})
 
+	// Regression test for an fd leak: ReadStream.destroy() can run while the
+	// async open is still in flight. The old code set #fd in #run *after*
+	// awaiting open, then checked #destroyed and returned without closing.
+	// destroy() meanwhile saw #fd === null and also did nothing — leaving the
+	// freshly-opened fd orphaned. Browsers cancelling Range requests on media
+	// files (HTTP file servers) hit this constantly.
+	testQnOnly('createReadStream destroyed during open does not leak fd', ({ bin, dir }) => {
+		writeFileSync(`${dir}/data.txt`, 'x')
+		writeFileSync(`${dir}/test.js`, `
+			import { createReadStream, readdirSync } from 'node:fs'
+			const countFds = () => {
+				try { return readdirSync('/proc/self/fd').length }
+				catch { return -1 }
+			}
+			const before = countFds()
+			for (let i = 0; i < 500; i++) {
+				const rs = createReadStream('${dir}/data.txt')
+				// destroy synchronously, before the async open settles.
+				rs.destroy()
+			}
+			// Allow pending opens to resolve so leaked fds would have been
+			// allocated by now and properly-closed fds would be released.
+			await new Promise(r => setTimeout(r, 500))
+			const after = countFds()
+			console.log('leaked:' + (after - before))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.strictEqual(output, 'leaked:0')
+	})
+
 	testQnOnly('createReadStream with start/end options', ({ bin, dir }) => {
 		writeFileSync(`${dir}/data.txt`, '0123456789')
 		writeFileSync(`${dir}/test.js`, `

@@ -39,15 +39,27 @@ export class ReadStream extends EventEmitter {
 
 	async #run() {
 		if (this.#fd === null) {
+			let fd
 			try {
-				this.#fd = await openAsync(this.#path, 'r')
+				fd = await openAsync(this.#path, 'r')
 			} catch (e) {
-				this.emit('error', e instanceof Error ? e : new Error(String(e)))
+				if (!this.#destroyed) {
+					this.emit('error', e instanceof Error ? e : new Error(String(e)))
+				}
 				return
 			}
 
+			/* If destroy() ran while the open was in flight, destroy() saw
+			 * #fd === null and skipped the close — leaving the fd we just
+			 * received orphaned. Close it here. Browsers cancelling Range
+			 * requests on media files hit this hard. */
+			if (this.#destroyed) {
+				closeAsync(fd).catch(() => {})
+				return
+			}
+
+			this.#fd = fd
 			this.emit('open', this.#fd)
-			if (this.#destroyed) return
 		}
 
 		this.#paused = false
