@@ -403,6 +403,87 @@ describe('qn:http serve()', () => {
 		assert.strictEqual(result.has2, true)
 	})
 
+	testQnOnly('proxied streaming response is cancelled when downstream disconnects', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { serve } from 'qn:http'
+			import { createConnection } from 'node:net'
+
+			const sleep = ms => new Promise(r => setTimeout(r, ms))
+			let cancelled = 0
+
+			function slowBody() {
+				let i = 0
+				return {
+					[Symbol.asyncIterator]() {
+						return {
+							async next() {
+								await sleep(10)
+								if (i++ >= 1000) return { done: true }
+								return { value: new Uint8Array(64 * 1024), done: false }
+							},
+							async return() {
+								cancelled++
+								return { done: true }
+							},
+						}
+					},
+				}
+			}
+
+			const remote = await serve({ port: 0, hostname: '127.0.0.1' }, (req) => {
+				const url = new URL(req.url)
+				if (url.pathname === '/cancelled') return Response.json({ cancelled })
+				return new Response(slowBody(), {
+					headers: { 'content-length': String(64 * 1024 * 1000) },
+				})
+			})
+			const remotePort = remote.address().port
+
+			const main = await serve({ port: 0, hostname: '127.0.0.1' }, async () => {
+				const res = await fetch('http://127.0.0.1:' + remotePort + '/stream')
+				return new Response(res.body, {
+					status: res.status,
+					headers: res.headers,
+				})
+			})
+			const mainPort = main.address().port
+
+			await new Promise((resolve, reject) => {
+				const client = createConnection(mainPort, '127.0.0.1')
+				let gotHeaders = false
+				const timeout = setTimeout(() => {
+					client.destroy()
+					reject(new Error('timed out waiting for response headers'))
+				}, 2000)
+				client.on('connect', () => {
+					client.write('GET / HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n')
+				})
+				client.on('data', (chunk) => {
+					if (!gotHeaders && chunk.toString().includes('\\r\\n\\r\\n')) {
+						gotHeaders = true
+						clearTimeout(timeout)
+						client.destroy()
+						resolve()
+					}
+				})
+				client.on('error', reject)
+			})
+
+			let result = null
+			for (let i = 0; i < 50; i++) {
+				await sleep(20)
+				result = await fetch('http://127.0.0.1:' + remotePort + '/cancelled').then(r => r.json())
+				if (result.cancelled > 0) break
+			}
+
+			main.close()
+			remote.close()
+			console.log(JSON.stringify(result))
+		`)
+		const output = $({ timeout: 10000 })`${bin} ${dir}/test.js`
+		assert.ok(JSON.parse(output).cancelled > 0)
+	})
+
 	testQnOnly('connection: close respected on first request', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import { serve } from 'qn:http'

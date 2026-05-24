@@ -745,8 +745,9 @@ export async function readRequest(reader, extraInit) {
 export async function writeResponse(writeFn, response, options) {
 	const status = response.status || 200
 	const statusText = response.statusText || 'OK'
+	const body = response.body
 	const hasContentLength = response.headers.has('content-length')
-	const useChunked = response.body && !hasContentLength
+	const useChunked = body && !hasContentLength
 	const keepAlive = options?.keepAlive ?? false
 
 	if (/[\r\n]/.test(statusText))
@@ -760,16 +761,53 @@ export async function writeResponse(writeFn, response, options) {
 	if (useChunked)
 		head += 'transfer-encoding: chunked\r\n'
 	head += keepAlive ? 'connection: keep-alive\r\n\r\n' : 'connection: close\r\n\r\n'
-	await writeFn(encode(head))
 
-	if (response.body) {
-		if (useChunked) {
-			await writeChunkedBody(writeFn, response.body)
-		} else {
-			for await (const chunk of response.body) {
-				const data = typeof chunk === 'string' ? encode(chunk) : chunk
-				await writeFn(data)
+	let completed = false
+	let reader = null
+	let iter = null
+	try {
+		await writeFn(encode(head))
+		if (!body) {
+			completed = true
+			return
+		}
+		if (typeof body.getReader === 'function') {
+			reader = body.getReader()
+			for (;;) {
+				const { value, done } = await reader.read()
+				if (done) break
+				const data = typeof value === 'string' ? encode(value) : value
+				if (useChunked) {
+					await writeFn(encode(data.byteLength.toString(16) + '\r\n'))
+					await writeFn(data)
+					await writeFn(encode('\r\n'))
+				} else {
+					await writeFn(data)
+				}
 			}
+		} else {
+			iter = body[Symbol.asyncIterator]()
+			for (;;) {
+				const { value, done } = await iter.next()
+				if (done) break
+				const data = typeof value === 'string' ? encode(value) : value
+				if (useChunked) {
+					await writeFn(encode(data.byteLength.toString(16) + '\r\n'))
+					await writeFn(data)
+					await writeFn(encode('\r\n'))
+				} else {
+					await writeFn(data)
+				}
+			}
+		}
+		if (useChunked)
+			await writeFn(encode('0\r\n\r\n'))
+		completed = true
+	} finally {
+		if (!completed) {
+			if (reader) await reader.cancel?.().catch(() => {})
+			else if (iter) await iter.return?.().catch(() => {})
+			else await body.cancel?.().catch(() => {})
 		}
 	}
 }

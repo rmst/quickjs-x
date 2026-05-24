@@ -68,7 +68,12 @@ export function serve(optionsOrHandler, handlerOrOptions) {
 
 					const writeFn = (data) => new Promise((resolve, reject) => {
 						if (socket.destroyed) { reject(new Error('socket closed')); return }
-						socket.write(data, (err) => err ? reject(err) : resolve())
+						const onClose = () => reject(new Error('socket closed'))
+						socket.once('close', onClose)
+						socket.write(data, (err) => {
+							socket.off('close', onClose)
+							err ? reject(err) : resolve()
+						})
 					})
 
 					await writeResponse(writeFn, response, { keepAlive })
