@@ -38,7 +38,11 @@ export { Headers, Request, Response }
  * - Backpressure: buffer is capped at HIGH_WATER bytes. When full,
  *   the drain pauses (stops reading from the socket) until the
  *   consumer pulls enough data below LOW_WATER.
- * - Cancellation: abort() stops the drain and closes the socket.
+ * - Cancellation: abort() stops the drain and frees the connection.
+ *   The `onAbort` hook destroys the underlying transport so any
+ *   pending transport.read also rejects — without this a server that
+ *   stops sending mid-response (chunked-stall) would keep the FD
+ *   reserved until the OS-level TCP timeout.
  * - Streaming: data flows through chunk-by-chunk for large responses.
  */
 const HIGH_WATER = 64 * 1024
@@ -55,6 +59,10 @@ class BodyQueue {
 		this._error = null
 		this._aborted = false
 		this._timeout = null
+		// Invoked once on the first abort(). Set by pipedBody to destroy the
+		// underlying connection — this is what unblocks an in-flight
+		// transport.read so the drain task can exit promptly.
+		this.onAbort = null
 	}
 
 	push(chunk) {
@@ -86,6 +94,7 @@ class BodyQueue {
 	}
 
 	end(error) {
+		if (this._done) return
 		this._done = true
 		this._error = error || null
 		this._clearTimeout()
@@ -118,6 +127,7 @@ class BodyQueue {
 	}
 
 	abort() {
+		if (this._aborted) return
 		this._aborted = true
 		this._done = true
 		this._clearTimeout()
@@ -133,20 +143,42 @@ class BodyQueue {
 			this._pullWait = null
 			resolve(null)
 		}
+		if (this.onAbort) {
+			try { this.onAbort() } catch {}
+		}
 	}
 }
 
 /**
  * Start a background drain that reads from bodyStream into a
- * backpressure-controlled BodyQueue. Returns an async generator
- * that the Response body reads from.
+ * backpressure-controlled BodyQueue. Returns an async iterable whose
+ * iterator aborts the queue on early termination (return/throw), so
+ * abandoned response bodies free their connection promptly instead of
+ * leaking it until BODY_TIMEOUT.
  *
- * onComplete(drained) is called when the drain finishes:
+ * onComplete(drained) is called exactly once when the body is settled:
  *   drained=true  → body fully read, connection can be reused
  *   drained=false → error or abort, connection should be destroyed
+ *
+ * The caller's onComplete is the sole owner of the connection from this
+ * point on. queue.onAbort is wired to fire onComplete(false) early so
+ * destroying the underlying handle interrupts the drain's transport.read.
  */
 function pipedBody(reader, leftover, contentLength, isChunked, onComplete) {
 	const queue = new BodyQueue()
+	let completed = false
+
+	const complete = (drained) => {
+		if (completed) return
+		completed = true
+		if (onComplete) onComplete(drained)
+	}
+
+	// Abort path: destroy the connection immediately. Closing the underlying
+	// handle makes any pending transport.read reject, which lets the drain
+	// task exit. The drain will then try to complete(false) again; the
+	// `completed` flag makes that a no-op.
+	queue.onAbort = () => complete(false)
 
 	// Background drain — reads the socket, pushes to queue
 	;(async () => {
@@ -165,17 +197,50 @@ function pipedBody(reader, leftover, contentLength, isChunked, onComplete) {
 		} catch (e) {
 			queue.end(e)
 		}
-		if (onComplete) onComplete(drained)
+		complete(drained)
 	})()
 
-	const body = async function* () {
-		for (;;) {
-			const chunk = await queue.pull()
-			if (chunk === null) return
-			yield chunk
+	const generator = async function* () {
+		try {
+			for (;;) {
+				const chunk = await queue.pull()
+				if (chunk === null) return
+				yield chunk
+			}
+		} finally {
+			// Safety net for paths that resume the generator without going
+			// through our wrapped iterator (shouldn't happen in practice).
+			// abort is idempotent and a no-op once the drain has called end().
+			if (!queue._done) queue.abort()
 		}
-	}()
+	}
 
+	const body = {
+		[Symbol.asyncIterator]() {
+			const iter = generator()
+			return {
+				next() { return iter.next() },
+				// for-await-of and explicit cancellation both go through here.
+				// Aborting first unblocks any pending queue.pull(), which lets
+				// the generator resume, run its finally, and let iter.return()
+				// resolve. Without this, an iter parked at `await pull()` would
+				// hang forever waiting for a pull that nothing will satisfy.
+				return(value) {
+					if (!queue._done) queue.abort()
+					return iter.return
+						? iter.return(value)
+						: Promise.resolve({ value, done: true })
+				},
+				throw(err) {
+					if (!queue._done) queue.abort()
+					return iter.throw
+						? iter.throw(err)
+						: Promise.reject(err)
+				},
+				[Symbol.asyncIterator]() { return this },
+			}
+		},
+	}
 	body._pipe = queue
 	return body
 }

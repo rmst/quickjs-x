@@ -526,6 +526,220 @@ describe('fetch body cleanup', () => {
 			close()
 		}
 	})
+
+	// Regression tests for the body-abandonment leak in pipedBody. The qn
+	// fetch client decouples socket reads from body consumption via a
+	// background drain task; the bug was that an abandoned async iterator
+	// (consumer breaks out of `for await`, or the iterator is closed early)
+	// left the drain blocked and the connection reserved until BODY_TIMEOUT
+	// (5 min). Each test below would leak one socket per iteration without
+	// the fix, exhausting an FD-limited process within a hundred or so
+	// requests.
+
+	testQnOnly('for-await break abandons body without leaking sockets', async ({ bin, dir }) => {
+		// Server returns a 256 KB body so the drain can't finish it within
+		// a single buffer window (HIGH_WATER = 64 KB) — the drain blocks
+		// at the first waitForDrain and would hold the socket without the
+		// abort-on-return fix.
+		writeFileSync(`${dir}/server.js`, `
+			import { createServer } from 'node:http'
+			const PAYLOAD = Buffer.alloc(256 * 1024, 'x')
+			const server = createServer((req, res) => {
+				res.writeHead(200, {
+					'content-type': 'application/octet-stream',
+					'content-length': String(PAYLOAD.length),
+					'connection': 'keep-alive',
+				})
+				res.end(PAYLOAD)
+			})
+			server.listen(0, '127.0.0.1', () => console.log(server.address().port))
+		`)
+		const serverProc = spawn(QN(), [`${dir}/server.js`], { stdio: ['ignore', 'pipe', 'inherit'] })
+		try {
+			const port = await new Promise((resolve, reject) => {
+				let out = ''
+				serverProc.stdout.on('data', d => {
+					out += d.toString()
+					const p = parseInt(out.trim(), 10)
+					if (!isNaN(p)) resolve(p)
+				})
+				serverProc.on('error', reject)
+			})
+
+			writeFileSync(`${dir}/test.js`, `
+				import { readdirSync } from 'node:fs'
+				const countFds = () => {
+					try { return readdirSync('/proc/self/fd').length }
+					catch { return -1 }
+				}
+				const before = countFds()
+				for (let i = 0; i < 200; i++) {
+					const res = await fetch('http://127.0.0.1:${port}/?i=' + i)
+					// Read one chunk then break — this triggers iter.return()
+					// on the body's async iterator. Without the fix the
+					// connection stays held by the background drain.
+					for await (const chunk of res.body) {
+						break
+					}
+				}
+				const after = countFds()
+				const leaked = after - before
+				// MAX_CONNS_PER_ORIGIN is 6, so up to ~6 pooled sockets are
+				// expected; anything more means the abort path didn't free.
+				console.log(leaked <= 10 ? 'ok' : 'leaked:' + leaked)
+			`)
+			const output = await execAsync(bin, [`${dir}/test.js`])
+			assert.strictEqual(output, 'ok')
+		} finally {
+			serverProc.kill()
+		}
+	})
+
+	testQnOnly('body.cancel() after partial read frees the connection', async ({ bin, dir }) => {
+		writeFileSync(`${dir}/server.js`, `
+			import { createServer } from 'node:http'
+			const PAYLOAD = Buffer.alloc(256 * 1024, 'x')
+			const server = createServer((req, res) => {
+				res.writeHead(200, {
+					'content-length': String(PAYLOAD.length),
+					'connection': 'keep-alive',
+				})
+				res.end(PAYLOAD)
+			})
+			server.listen(0, '127.0.0.1', () => console.log(server.address().port))
+		`)
+		const serverProc = spawn(QN(), [`${dir}/server.js`], { stdio: ['ignore', 'pipe', 'inherit'] })
+		try {
+			const port = await new Promise((resolve, reject) => {
+				let out = ''
+				serverProc.stdout.on('data', d => {
+					out += d.toString()
+					const p = parseInt(out.trim(), 10)
+					if (!isNaN(p)) resolve(p)
+				})
+				serverProc.on('error', reject)
+			})
+
+			writeFileSync(`${dir}/test.js`, `
+				import { readdirSync } from 'node:fs'
+				const countFds = () => {
+					try { return readdirSync('/proc/self/fd').length }
+					catch { return -1 }
+				}
+				const before = countFds()
+				for (let i = 0; i < 200; i++) {
+					const res = await fetch('http://127.0.0.1:${port}/?i=' + i)
+					const reader = res.body.getReader()
+					await reader.read()      // pull one chunk
+					await reader.cancel()    // explicit cancellation
+				}
+				const after = countFds()
+				const leaked = after - before
+				console.log(leaked <= 10 ? 'ok' : 'leaked:' + leaked)
+			`)
+			const output = await execAsync(bin, [`${dir}/test.js`])
+			assert.strictEqual(output, 'ok')
+		} finally {
+			serverProc.kill()
+		}
+	})
+
+	testQnOnly('chunked stall: server pauses mid-body, abort frees socket fast', async ({ bin, dir }) => {
+		// Server starts sending then never finishes. Without the fix this
+		// would hang in transport.read forever (BODY_TIMEOUT only fires once
+		// the queue fills via waitForDrain, which can't happen if the drain
+		// itself is blocked on the read).
+		writeFileSync(`${dir}/server.js`, `
+			import { createServer } from 'node:http'
+			const server = createServer((req, res) => {
+				res.writeHead(200, {
+					'transfer-encoding': 'chunked',
+					'connection': 'keep-alive',
+				})
+				res.write('hello')
+				// Never call res.end — keep the connection open indefinitely.
+			})
+			server.listen(0, '127.0.0.1', () => console.log(server.address().port))
+		`)
+		const serverProc = spawn(QN(), [`${dir}/server.js`], { stdio: ['ignore', 'pipe', 'inherit'] })
+		try {
+			const port = await new Promise((resolve, reject) => {
+				let out = ''
+				serverProc.stdout.on('data', d => {
+					out += d.toString()
+					const p = parseInt(out.trim(), 10)
+					if (!isNaN(p)) resolve(p)
+				})
+				serverProc.on('error', reject)
+			})
+
+			writeFileSync(`${dir}/test.js`, `
+				const start = Date.now()
+				const res = await fetch('http://127.0.0.1:${port}/')
+				const reader = res.body.getReader()
+				await reader.read()           // pull the first chunk
+				await reader.cancel()         // abort while server still hangs
+				const elapsed = Date.now() - start
+				// Must complete promptly — well under BODY_TIMEOUT (5 min).
+				console.log(elapsed < 2000 ? 'ok' : 'slow:' + elapsed)
+			`)
+			const output = await execAsync(bin, [`${dir}/test.js`])
+			assert.strictEqual(output, 'ok')
+		} finally {
+			serverProc.kill()
+		}
+	})
+
+	testQnOnly('AbortController mid-body releases the connection', async ({ bin, dir }) => {
+		writeFileSync(`${dir}/server.js`, `
+			import { createServer } from 'node:http'
+			const PAYLOAD = Buffer.alloc(256 * 1024, 'x')
+			const server = createServer((req, res) => {
+				res.writeHead(200, {
+					'content-length': String(PAYLOAD.length),
+					'connection': 'keep-alive',
+				})
+				res.end(PAYLOAD)
+			})
+			server.listen(0, '127.0.0.1', () => console.log(server.address().port))
+		`)
+		const serverProc = spawn(QN(), [`${dir}/server.js`], { stdio: ['ignore', 'pipe', 'inherit'] })
+		try {
+			const port = await new Promise((resolve, reject) => {
+				let out = ''
+				serverProc.stdout.on('data', d => {
+					out += d.toString()
+					const p = parseInt(out.trim(), 10)
+					if (!isNaN(p)) resolve(p)
+				})
+				serverProc.on('error', reject)
+			})
+
+			writeFileSync(`${dir}/test.js`, `
+				import { readdirSync } from 'node:fs'
+				const countFds = () => {
+					try { return readdirSync('/proc/self/fd').length }
+					catch { return -1 }
+				}
+				const before = countFds()
+				for (let i = 0; i < 50; i++) {
+					const controller = new AbortController()
+					const res = await fetch('http://127.0.0.1:${port}/?i=' + i, { signal: controller.signal })
+					const reader = res.body.getReader()
+					await reader.read()
+					controller.abort()
+					try { await reader.read() } catch {}
+				}
+				const after = countFds()
+				const leaked = after - before
+				console.log(leaked <= 10 ? 'ok' : 'leaked:' + leaked)
+			`)
+			const output = await execAsync(bin, [`${dir}/test.js`])
+			assert.strictEqual(output, 'ok')
+		} finally {
+			serverProc.kill()
+		}
+	})
 })
 
 describe('Response', () => {
