@@ -299,11 +299,19 @@ export class Socket extends EventEmitter {
 			if (this.#handle && this.#connected) {
 				setOnShutdown(this.#handle, (err) => {
 					this.emit('finish')
-					/* Only destroy if the read side is already done.
-					 * If not, keep the socket open for reading — the
-					 * read EOF handler will destroy when it fires. */
 					if (this.#readEnded) {
 						this.destroy()
+					} else if (!this.#allowHalfOpen && this.#paused) {
+						/* Without this, a paused socket (uv_read_stop) won't
+						 * see the peer's FIN — the EOF callback never fires,
+						 * destroy() is never called, and the fd leaks in TCP
+						 * CLOSED state until the process exits. Resuming lets
+						 * libuv deliver the EOF, which goes through the read
+						 * EOF handler and destroys cleanly. Any bytes still in
+						 * flight are emitted as 'data' first; that matches
+						 * Node.js semantics (end() doesn't suppress data). */
+						this.#paused = false
+						readStart(this.#handle)
 					}
 				})
 				try {

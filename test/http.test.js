@@ -792,4 +792,58 @@ describe('node:http Server', () => {
 			assert.equal(output, 'status431:true')
 		})
 	})
+
+	// Regression test for a Socket fd leak: after a server-side socket.end()
+	// (e.g. response done), the destroy chain hinges on the libuv read EOF
+	// callback firing when the peer's FIN arrives. But if the socket has been
+	// paused (uv_read_stop, which qn:http's socketReader does for backpressure),
+	// libuv stops delivering callbacks — including EOF. Without resuming on
+	// shutdown, the fd lingers in TCP CLOSED state until the process exits.
+	testQnOnly('paused socket releases fd after end() (CLOSED-state leak fix)', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { createServer, createConnection } from 'node:net'
+			import { readdirSync } from 'node:fs'
+
+			const countFds = () => {
+				try { return readdirSync('/proc/self/fd').length }
+				catch { return -1 }
+			}
+
+			const server = createServer((socket) => {
+				// Force the paused-socket condition: pause before the peer's
+				// FIN arrives, then end. _shutdown sends our FIN; without the
+				// fix, the EOF for the peer's FIN never reaches us and the fd
+				// stays held.
+				socket.once('data', () => {
+					socket.pause()
+					socket.write('reply')
+					socket.end()
+				})
+			})
+
+			await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+			const port = server.address().port
+
+			const before = countFds()
+			for (let i = 0; i < 100; i++) {
+				await new Promise((resolve) => {
+					const client = createConnection(port, '127.0.0.1', () => {
+						client.write('ping')
+					})
+					client.on('data', () => {})
+					client.on('end', () => { client.end(); resolve() })
+					client.on('error', () => resolve())
+				})
+			}
+			await new Promise(r => setTimeout(r, 200))
+			const after = countFds()
+			server.close()
+
+			const leaked = after - before
+			console.log(leaked <= 10 ? 'ok' : 'leaked:' + leaked)
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.equal(output, 'ok')
+		})
+	})
 })
