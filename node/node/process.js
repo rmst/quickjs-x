@@ -83,35 +83,101 @@ const validateUmask = (mask) => {
  * isn't appropriate for the canonical "console.log" path because it makes
  * output appear after subsequent JS work runs. */
 const createWriteStream = (fd) => {
-  const file = fd === 1 ? std.out : std.err;
-  const stream = new WriteStream(fd);
-  stream.write = function(data, encoding, callback) {
-    if (typeof encoding === 'function') {
-      callback = encoding;
-      encoding = 'utf8';
-    }
-    try {
-      if (typeof data === 'string') {
-        file.puts(data);
-      } else {
-        /* Uint8Array / Buffer — convert via decode (utf8) for puts */
-        file.puts(new TextDecoder().decode(data));
-      }
-      file.flush();
-      if (callback) queueMicrotask(callback);
-      return true;
-    } catch (err) {
-      if (callback) callback(err);
-      return false;
-    }
-  };
-  return stream;
-};
+	const file = fd === 1 ? std.out : std.err
+	const stream = new WriteStream(fd)
+	stream.write = function(data, encoding, callback) {
+		if (typeof encoding === 'function') {
+			callback = encoding
+			encoding = 'utf8'
+		}
+		try {
+			if (typeof data === 'string') {
+				file.puts(data)
+			} else {
+				/* Uint8Array / Buffer — convert via decode (utf8) for puts */
+				file.puts(new TextDecoder().decode(data))
+			}
+			file.flush()
+			if (callback) queueMicrotask(callback)
+			return true
+		} catch (err) {
+			if (callback) callback(err)
+			return false
+		}
+	}
+	return stream
+}
+
+const installTtyResizeSignal = (stream) => {
+	const sigwinch = signalMap.SIGWINCH
+	if (sigwinch === undefined || !stream.isTTY) return
+
+	let size = stream.getWindowSize()
+	let handle = null
+	const dispatchResize = () => {
+		const next = stream.getWindowSize()
+		if (!next) return
+		const prev = size
+		size = next
+		if (!prev || next[0] !== prev[0] || next[1] !== prev[1]) {
+			stream.emit('resize')
+		}
+	}
+	const ensureHandle = () => {
+		if (!handle && stream.listenerCount('resize') > 0) {
+			/* qn_uv_signals unrefs signal handles, so this does not keep the
+			 * process alive. Install lazily to preserve Node's cross-emitter
+			 * ordering between process.on('SIGWINCH') and stdio 'resize'. */
+			handle = uvSignal(sigwinch, dispatchResize)
+		}
+	}
+	const maybeCloseHandle = () => {
+		if (handle && stream.listenerCount('resize') === 0) {
+			handle.close()
+			handle = null
+		}
+	}
+	const replaceMethod = (name, fn) => {
+		Object.defineProperty(stream, name, {
+			value: fn,
+			writable: true,
+			configurable: true,
+		})
+	}
+	const wrapAdd = (name) => {
+		const original = stream[name].bind(stream)
+		replaceMethod(name, function(event, ...args) {
+			const ret = original(event, ...args)
+			if (event === 'resize') ensureHandle()
+			return ret
+		})
+	}
+	const wrapRemove = (name) => {
+		const original = stream[name].bind(stream)
+		replaceMethod(name, function(event, ...args) {
+			const ret = original(event, ...args)
+			if (event === undefined || event === 'resize') maybeCloseHandle()
+			return ret
+		})
+	}
+	wrapAdd('on')
+	wrapAdd('addListener')
+	wrapAdd('once')
+	wrapAdd('prependListener')
+	wrapRemove('removeListener')
+	wrapRemove('off')
+	wrapRemove('removeAllListeners')
+}
 
 // Event handlers storage
-const eventHandlers = new Map();
+const eventHandlers = new Map()
 // Active uv_signal_t handles per signal name
-const signalHandles = new Map();
+const signalHandles = new Map()
+
+const processStdout = createWriteStream(1)
+const processStderr = createWriteStream(2)
+installTtyResizeSignal(processStdout)
+installTtyResizeSignal(processStderr)
 
 // Process object that mimics Node.js process module
 const process = {
@@ -183,8 +249,8 @@ const process = {
   // Standard streams. ReadStream/WriteStream constructors are cheap; the
   // libuv handle is allocated lazily on first I/O / setRawMode.
   stdin: new ReadStream(0),
-  stdout: createWriteStream(1),
-  stderr: createWriteStream(2),
+  stdout: processStdout,
+  stderr: processStderr,
 
   // Process ID
   get pid() {

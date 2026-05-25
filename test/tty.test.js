@@ -188,6 +188,52 @@ describe('node:tty TTY behavior (qn-only via PTY)', () => {
 		assert.deepStrictEqual(parsed.ws, [137, 41])
 	})
 
+	it('process.stdout emits resize when the PTY size changes', async () => {
+		await new Promise((resolve, reject) => {
+			const pty = spawnPty(QN(), ['-e', `
+				console.log('READY ' + process.stdout.columns + 'x' + process.stdout.rows)
+				process.stdout.on('resize', () => {
+					console.log('RESIZE ' + process.stdout.columns + 'x' + process.stdout.rows)
+					process.exit(0)
+				})
+				setTimeout(() => process.exit(1), 1000)
+			`], { cols: 80, rows: 24 })
+			let out = ''
+			let resized = false
+			let settled = false
+			const finish = (fn, value) => {
+				if (settled) return
+				settled = true
+				clearTimeout(timer)
+				fn(value)
+			}
+			const timer = setTimeout(() => {
+				pty.kill()
+				finish(reject, new Error(`PTY child timed out\nGot: ${JSON.stringify(out)}`))
+			}, 4000)
+			pty.onData((d) => {
+				out += d
+				if (!resized && out.includes('READY')) {
+					resized = true
+					pty.resize(100, 30)
+				}
+			})
+			pty.onExit(({ exitCode }) => {
+				if (exitCode !== 0) {
+					finish(reject, new Error(`PTY child exited ${exitCode}\nGot: ${out}`))
+					return
+				}
+				try {
+					assert.match(out, /READY 80x24/)
+					assert.match(out, /RESIZE 100x30/)
+					finish(resolve)
+				} catch (err) {
+					finish(reject, err)
+				}
+			})
+		})
+	})
+
 	it('setRawMode(true) toggles isRaw, setRawMode(false) clears it', async () => {
 		const out = await runInPty(`
 			process.stdin.setRawMode(true)
