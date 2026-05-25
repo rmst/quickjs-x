@@ -139,6 +139,50 @@ describe('node:process shim', () => {
 		})
 	})
 
+	test('process.umask gets, sets, and exports named function', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import process, { umask } from 'node:process'
+
+			const old = process.umask()
+			try {
+				const setFromNumberPrevious = process.umask(0o077)
+				const afterNumber = process.umask()
+				const setFromStringPrevious = umask('022')
+				const afterString = umask()
+				let invalidStringCode
+				let invalidNumberCode
+
+				try { process.umask('888') } catch (e) { invalidStringCode = e.code }
+				try { process.umask(-1) } catch (e) { invalidNumberCode = e.code }
+
+				console.log(JSON.stringify({
+					functionType: typeof process.umask,
+					namedFunctionType: typeof umask,
+					setFromNumberPreviousType: typeof setFromNumberPrevious,
+					afterNumber: afterNumber.toString(8),
+					setFromStringPrevious: setFromStringPrevious.toString(8),
+					afterString: afterString.toString(8),
+					invalidStringCode,
+					invalidNumberCode,
+				}))
+			} finally {
+				process.umask(old)
+			}
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), {
+			functionType: 'function',
+			namedFunctionType: 'function',
+			setFromNumberPreviousType: 'number',
+			afterNumber: '77',
+			setFromStringPrevious: '77',
+			afterString: '22',
+			invalidStringCode: 'ERR_INVALID_ARG_VALUE',
+			invalidNumberCode: 'ERR_OUT_OF_RANGE',
+		})
+	})
+
 	test('process.exitCode sets exit code', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import process from 'node:process'

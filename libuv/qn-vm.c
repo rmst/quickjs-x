@@ -183,6 +183,7 @@ JSValue js_qn_eval_module(JSContext *ctx, JSValueConst this_val,
 #if !defined(_WIN32)
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
 #include <pwd.h>
@@ -873,6 +874,20 @@ static JSValue js_vm_getgid(JSContext *ctx, JSValueConst this_val,
 	return JS_NewInt32(ctx, getgid());
 }
 
+static JSValue js_vm_getUmask(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+	mode_t mask = umask(0);
+	umask(mask);
+	return JS_NewUint32(ctx, mask);
+}
+
+static JSValue js_vm_setUmask(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+	uint32_t mask;
+	if (JS_ToUint32(ctx, &mask, argv[0])) return JS_EXCEPTION;
+	return JS_NewUint32(ctx, umask((mode_t)mask));
+}
+
 static JSValue js_vm_getgroups(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv) {
 	int n = getgroups(0, NULL);
@@ -1003,6 +1018,8 @@ static const JSCFunctionListEntry vm_funcs[] = {
 #if !defined(_WIN32)
 	QN_CFUNC_DEF("getuid", 0, js_vm_getuid),
 	QN_CFUNC_DEF("getgid", 0, js_vm_getgid),
+	QN_CFUNC_DEF("getUmask", 0, js_vm_getUmask),
+	QN_CFUNC_DEF("setUmask", 1, js_vm_setUmask),
 	QN_CFUNC_DEF("getgroups", 0, js_vm_getgroups),
 	QN_CFUNC_DEF("setuid", 1, js_vm_setuid),
 	QN_CFUNC_DEF("setgid", 1, js_vm_setgid),

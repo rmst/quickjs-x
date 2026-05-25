@@ -5,6 +5,7 @@ import {
 	kill as _kill, getPid as _getPid, getPlatform as _getPlatform,
 	getArch as _getArch, getExecPath as _getExecPath,
 	getuid as _getuid, getgid as _getgid, getgroups as _getgroups,
+	getUmask as _getUmask, setUmask as _setUmask,
 	setuid as _setuid, setgid as _setgid, setgroups as _setgroups,
 	hrtimeBigInt as _hrtimeBigInt,
 } from 'qn_vm';
@@ -33,6 +34,48 @@ const hrtime = (prev) => {
 	return [sec, nsec]
 }
 hrtime.bigint = () => _hrtimeBigInt()
+
+const createInvalidUmaskValueError = (mask) => {
+	const err = new TypeError(`The argument 'mask' must be a 32-bit unsigned integer or an octal string. Received ${JSON.stringify(mask)}`)
+	err.code = 'ERR_INVALID_ARG_VALUE'
+	return err
+}
+
+const createInvalidUmaskTypeError = (mask) => {
+	const type = mask === null ? 'null' : typeof mask
+	const err = new TypeError(`The "mask" argument must be of type number or string. Received ${type}`)
+	err.code = 'ERR_INVALID_ARG_TYPE'
+	return err
+}
+
+const createUmaskRangeError = (message) => {
+	const err = new RangeError(message)
+	err.code = 'ERR_OUT_OF_RANGE'
+	return err
+}
+
+const validateUmask = (mask) => {
+	if (typeof mask === 'string') {
+		if (!/^[0-7]+$/.test(mask)) {
+			throw createInvalidUmaskValueError(mask)
+		}
+		const parsed = Number.parseInt(mask, 8)
+		if (parsed > 0xffffffff) {
+			throw createInvalidUmaskValueError(mask)
+		}
+		return parsed
+	}
+	if (typeof mask !== 'number') {
+		throw createInvalidUmaskTypeError(mask)
+	}
+	if (!Number.isInteger(mask)) {
+		throw createUmaskRangeError(`The value of "mask" is out of range. It must be an integer. Received ${mask}`)
+	}
+	if (mask < 0 || mask > 0xffffffff) {
+		throw createUmaskRangeError(`The value of "mask" is out of range. It must be >= 0 && <= 4294967295. Received ${mask}`)
+	}
+	return mask
+}
 
 /* stdout/stderr go through std.out/std.err for synchronous writes — that
  * matches Node.js semantics for process.stdout (synchronous when fd is a
@@ -150,6 +193,13 @@ const process = {
 
   // High-resolution time
   hrtime,
+
+  umask(mask) {
+    if (mask === undefined) {
+      return _getUmask();
+    }
+    return _setUmask(validateUmask(mask));
+  },
 
   // User and group IDs
   getuid: () => _getuid(),
@@ -270,6 +320,6 @@ const process = {
 export default process;
 
 // Also export individual properties for named imports
-export const { argv, execPath, exit, exitCode, cwd, chdir, kill, pid, getuid, getgid, getgroups, setuid, setgid, setgroups, platform, arch, version, versions, stdin, stdout, stderr } = process;
+export const { argv, execPath, exit, exitCode, cwd, chdir, kill, pid, umask, getuid, getgid, getgroups, setuid, setgid, setgroups, platform, arch, version, versions, stdin, stdout, stderr } = process;
 export { hrtime };
 export const env = process.env;  // Export env separately to preserve the Proxy
