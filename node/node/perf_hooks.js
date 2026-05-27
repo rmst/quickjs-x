@@ -1,4 +1,11 @@
-import { hrtime as _hrtime } from 'qn_vm'
+import {
+	hrtime as _hrtime,
+	hrtimeBigInt as _hrtimeBigInt,
+	eventLoopUtilization as _nativeEventLoopUtilization,
+	setTimeout as _setTimeout,
+	clearTimeout as _clearTimeout,
+	timerUnref as _timerUnref,
+} from 'qn_vm'
 import { NodeCompatibilityError } from './errors.js'
 
 // timeOrigin: ms since unix epoch when this module loaded (≈ process start).
@@ -76,6 +83,27 @@ const resolveMark = (v) => {
 	return m.startTime
 }
 
+const normalizeELU = (u) => ({
+	idle: Number(u?.idle ?? 0),
+	active: Number(u?.active ?? 0),
+	utilization: Number(u?.utilization ?? 0),
+})
+
+const makeELU = (idle, active) => {
+	const total = idle + active
+	return { idle, active, utilization: total > 0 ? active / total : 0 }
+}
+
+const eventLoopUtilization = (utilization1, utilization2) => {
+	if (utilization1 === undefined) return normalizeELU(_nativeEventLoopUtilization())
+
+	const newer = utilization2 === undefined
+		? normalizeELU(_nativeEventLoopUtilization())
+		: normalizeELU(utilization1)
+	const older = normalizeELU(utilization2 === undefined ? utilization1 : utilization2)
+	return makeELU(newer.idle - older.idle, newer.active - older.active)
+}
+
 const performance = {
 	timeOrigin,
 
@@ -150,10 +178,7 @@ const performance = {
 		return entries.filter(e => e.entryType === type)
 	},
 
-	eventLoopUtilization() {
-		// Stub: Node.js returns { idle, active, utilization }. We don't track these.
-		return { idle: 0, active: 0, utilization: 0 }
-	},
+	eventLoopUtilization,
 
 	toJSON() {
 		return { timeOrigin: this.timeOrigin, nodeTiming: {} }
@@ -188,24 +213,165 @@ class PerformanceObserver {
 }
 PerformanceObserver.supportedEntryTypes = ['mark', 'measure']
 
-// monitorEventLoopDelay: stub Histogram. Real implementation would sample the
-// event loop; we return a histogram-shaped object that always reports zeros.
-class EventLoopDelayHistogram {
-	constructor() {
-		this.min = 0
-		this.max = 0
-		this.mean = 0
-		this.stddev = 0
-		this.exceeds = 0
-	}
-	enable() { return true }
-	disable() { return true }
-	reset() {}
-	percentile(_p) { return 0 }
-	percentiles() { return new Map() }
+const INITIAL_MIN = 9223372036854775807
+const EMPTY_PERCENTILE_VALUE = 511
+const BUCKETS_PER_POWER = 16
+const MAX_SAFE_NS = Number.MAX_SAFE_INTEGER
+
+const nsBigIntToNumber = (ns) => {
+	if (ns <= 0n) return 0
+	const max = BigInt(MAX_SAFE_NS)
+	return Number(ns > max ? max : ns)
 }
 
-const monitorEventLoopDelay = (_options) => new EventLoopDelayHistogram()
+const bucketIndexFor = (ns) => {
+	if (ns <= 0) return 0
+	const exponent = Math.floor(Math.log2(ns))
+	const base = 2 ** exponent
+	const step = Math.max(1, Math.floor(base / BUCKETS_PER_POWER))
+	const slot = Math.min(BUCKETS_PER_POWER - 1, Math.floor((ns - base) / step))
+	return exponent * BUCKETS_PER_POWER + slot + 1
+}
+
+const bucketUpperBound = (index) => {
+	if (index <= 0) return 0
+	const adjusted = index - 1
+	const exponent = Math.floor(adjusted / BUCKETS_PER_POWER)
+	const slot = adjusted % BUCKETS_PER_POWER
+	const base = 2 ** exponent
+	const step = Math.max(1, Math.floor(base / BUCKETS_PER_POWER))
+	return Math.min(MAX_SAFE_NS, base + (slot + 1) * step - 1)
+}
+
+// monitorEventLoopDelay samples a repeating, unref'd timer. Samples are stored
+// in nanoseconds, matching Node's Histogram API. Streaming mean/stddev keep
+// summary stats exact while logarithmic buckets bound memory for percentiles.
+class EventLoopDelayHistogram {
+	#resolutionMs
+	#resolutionNs
+	#enabled = false
+	#timer = null
+	#lastNs = 0n
+	#count = 0
+	#min = INITIAL_MIN
+	#max = 0
+	#mean = 0
+	#m2 = 0
+	#exceeds = 0
+	#buckets = new Map()
+
+	constructor(options = {}) {
+		const resolution = options?.resolution ?? 10
+		if (!Number.isFinite(resolution) || resolution <= 0) {
+			throw new RangeError('The value of "options.resolution" is out of range. It must be a positive number.')
+		}
+		this.#resolutionMs = Math.max(1, Math.trunc(resolution))
+		this.#resolutionNs = BigInt(this.#resolutionMs) * 1_000_000n
+	}
+
+	get min() { return this.#count === 0 ? INITIAL_MIN : this.#min }
+	get max() { return this.#max }
+	get mean() { return this.#count === 0 ? NaN : this.#mean }
+	get stddev() { return this.#count === 0 ? NaN : Math.sqrt(this.#m2 / this.#count) }
+	get exceeds() { return this.#exceeds }
+	get count() { return this.#count }
+	get percentiles() {
+		if (this.#count === 0) return new Map([[100, 0]])
+		return new Map([
+			[0, this.#min],
+			[50, this.percentile(50)],
+			[75, this.percentile(75)],
+			[87.5, this.percentile(87.5)],
+			[100, this.#max],
+		])
+	}
+
+	enable() {
+		if (this.#enabled) return false
+		this.#enabled = true
+		this.#lastNs = _hrtimeBigInt()
+		this.#schedule()
+		return true
+	}
+
+	disable() {
+		if (!this.#enabled) return false
+		this.#enabled = false
+		if (this.#timer !== null) {
+			_clearTimeout(this.#timer)
+			this.#timer = null
+		}
+		return true
+	}
+
+	reset() {
+		this.#count = 0
+		this.#min = INITIAL_MIN
+		this.#max = 0
+		this.#mean = 0
+		this.#m2 = 0
+		this.#exceeds = 0
+		this.#buckets.clear()
+		if (this.#enabled) this.#lastNs = _hrtimeBigInt()
+	}
+
+	percentile(percentile) {
+		if (!(percentile > 0 && percentile <= 100)) {
+			throw new RangeError(`The value of "percentile" is out of range. It must be > 0 && <= 100. Received ${percentile}`)
+		}
+		if (this.#count === 0) return EMPTY_PERCENTILE_VALUE
+		if (percentile === 100) return this.#max
+
+		const target = Math.max(1, Math.ceil(this.#count * percentile / 100))
+		let seen = 0
+		for (const index of [...this.#buckets.keys()].sort((a, b) => a - b)) {
+			seen += this.#buckets.get(index)
+			if (seen >= target) return bucketUpperBound(index)
+		}
+		return this.#max
+	}
+
+	toJSON() {
+		return {
+			count: this.count,
+			min: this.min,
+			max: this.max,
+			mean: this.mean,
+			exceeds: this.exceeds,
+			stddev: this.stddev,
+			percentiles: Object.fromEntries(this.percentiles),
+		}
+	}
+
+	#schedule() {
+		this.#timer = _setTimeout(() => this.#sample(), this.#resolutionMs)
+		_timerUnref(this.#timer)
+	}
+
+	#sample() {
+		if (!this.#enabled) return
+		const currentNs = _hrtimeBigInt()
+		let sampleNs = currentNs - this.#lastNs
+		if (sampleNs < this.#resolutionNs) sampleNs = this.#resolutionNs
+		this.#lastNs = currentNs
+		this.#record(nsBigIntToNumber(sampleNs))
+		this.#schedule()
+	}
+
+	#record(ns) {
+		this.#count++
+		if (ns < this.#min) this.#min = ns
+		if (ns > this.#max) this.#max = ns
+		const delta = ns - this.#mean
+		this.#mean += delta / this.#count
+		this.#m2 += delta * (ns - this.#mean)
+
+		const index = bucketIndexFor(ns)
+		this.#buckets.set(index, (this.#buckets.get(index) ?? 0) + 1)
+	}
+}
+
+const monitorEventLoopDelay = (options) => new EventLoopDelayHistogram(options)
 
 const createHistogram = () => {
 	throw new NodeCompatibilityError('perf_hooks.createHistogram is not implemented')

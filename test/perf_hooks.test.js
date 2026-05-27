@@ -128,11 +128,86 @@ describe('node:perf_hooks', () => {
 			console.log(JSON.stringify({
 				hasEnable: typeof h.enable === 'function',
 				hasPercentile: typeof h.percentile === 'function',
+				hasPercentiles: typeof h.percentiles?.entries === 'function',
 				hasMin: typeof h.min === 'number',
+				hasCount: typeof h.count === 'number',
 			}))
 		`)
 		assert.deepStrictEqual(JSON.parse($`${bin} ${dir}/test.js`), {
-			hasEnable: true, hasPercentile: true, hasMin: true,
+			hasEnable: true, hasPercentile: true, hasPercentiles: true,
+			hasMin: true, hasCount: true,
+		})
+	})
+
+	test('monitorEventLoopDelay records event-loop delay samples', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { monitorEventLoopDelay } from 'node:perf_hooks'
+			const h = monitorEventLoopDelay({ resolution: 10 })
+			const enable1 = h.enable()
+			const enable2 = h.enable()
+			await new Promise(r => setTimeout(r, 35))
+			const disable1 = h.disable()
+			const disable2 = h.disable()
+			console.log(JSON.stringify({
+				enable1,
+				enable2,
+				disable1,
+				disable2,
+				countPositive: h.count > 0,
+				minPositive: h.min > 0,
+				maxGteMin: h.max >= h.min,
+				meanPositive: h.mean > 0,
+				p50Positive: h.percentile(50) > 0,
+				hasPercentiles: typeof h.percentiles?.entries === 'function',
+			}))
+		`)
+		assert.deepStrictEqual(JSON.parse($`${bin} ${dir}/test.js`), {
+			enable1: true,
+			enable2: false,
+			disable1: true,
+			disable2: false,
+			countPositive: true,
+			minPositive: true,
+			maxGteMin: true,
+			meanPositive: true,
+			p50Positive: true,
+			hasPercentiles: true,
+		})
+	})
+
+	test('monitorEventLoopDelay does not keep the process alive', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { monitorEventLoopDelay } from 'node:perf_hooks'
+			monitorEventLoopDelay().enable()
+			console.log('done')
+		`)
+		assert.strictEqual($`${bin} ${dir}/test.js`, 'done')
+	})
+
+	test('performance.eventLoopUtilization reports cumulative and delta usage', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import { performance } from 'node:perf_hooks'
+			await new Promise(r => setTimeout(r, 5))
+			const before = performance.eventLoopUtilization()
+			await new Promise(r => setTimeout(r, 30))
+			const after = performance.eventLoopUtilization()
+			const delta = performance.eventLoopUtilization(before)
+			console.log(JSON.stringify({
+				shape: ['idle', 'active', 'utilization'].every(k => typeof after[k] === 'number'),
+				cumulativeIdle: after.idle >= before.idle,
+				cumulativeActive: after.active >= before.active,
+				deltaIdle: delta.idle >= 0,
+				deltaActive: delta.active >= 0,
+				utilizationRange: after.utilization >= 0 && after.utilization <= 1 && delta.utilization >= 0 && delta.utilization <= 1,
+			}))
+		`)
+		assert.deepStrictEqual(JSON.parse($`${bin} ${dir}/test.js`), {
+			shape: true,
+			cumulativeIdle: true,
+			cumulativeActive: true,
+			deltaIdle: true,
+			deltaActive: true,
+			utilizationRange: true,
 		})
 	})
 

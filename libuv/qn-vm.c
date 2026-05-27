@@ -212,6 +212,8 @@ void qn_vm_register_cleanup(qn_cleanup_fn fn) {
 
 static _Thread_local uv_loop_t *g_loop = NULL;
 static _Thread_local JSContext *g_ctx = NULL;
+static _Thread_local int g_loop_metrics_enabled = 0;
+static _Thread_local uint64_t g_loop_metrics_start_ns = 0;
 
 /* Three-handle pattern for microtask draining during uv_run */
 static _Thread_local uv_prepare_t g_prepare;
@@ -772,6 +774,44 @@ static JSValue js_vm_hrtimeBigInt(JSContext *ctx, JSValueConst this_val,
 	return JS_NewBigUint64(ctx, uv_hrtime());
 }
 
+/* JS: eventLoopUtilization() → { idle, active, utilization }
+ * Values are cumulative milliseconds since the first call. We lazily enable
+ * libuv's UV_METRICS_IDLE_TIME accounting here so processes that never ask for
+ * event-loop utilization pay no event-loop metrics overhead. */
+static JSValue js_vm_eventLoopUtilization(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv) {
+	if (!g_loop_metrics_enabled && g_loop) {
+		int r = uv_loop_configure(g_loop, UV_METRICS_IDLE_TIME);
+		if (r != 0)
+			return qn_throw_errno(ctx, r);
+		g_loop_metrics_start_ns = uv_hrtime();
+		g_loop_metrics_enabled = 1;
+	}
+
+	uint64_t now_ns = uv_hrtime();
+	uint64_t elapsed_ns = g_loop_metrics_start_ns > 0 && now_ns >= g_loop_metrics_start_ns
+		? now_ns - g_loop_metrics_start_ns
+		: 0;
+	uint64_t idle_ns = g_loop_metrics_enabled ? uv_metrics_idle_time(g_loop) : 0;
+	if (idle_ns > elapsed_ns)
+		idle_ns = elapsed_ns;
+	uint64_t active_ns = elapsed_ns - idle_ns;
+	double idle = (double)idle_ns / 1e6;
+	double active = (double)active_ns / 1e6;
+	double total = idle + active;
+
+	JSValue obj = JS_NewObject(ctx);
+	if (JS_IsException(obj)) return obj;
+	JS_DefinePropertyValueStr(ctx, obj, "idle", JS_NewFloat64(ctx, idle),
+		JS_PROP_C_W_E);
+	JS_DefinePropertyValueStr(ctx, obj, "active", JS_NewFloat64(ctx, active),
+		JS_PROP_C_W_E);
+	JS_DefinePropertyValueStr(ctx, obj, "utilization",
+		JS_NewFloat64(ctx, total > 0 ? active / total : 0),
+		JS_PROP_C_W_E);
+	return obj;
+}
+
 /* JS: getPlatform() → string ("linux", "darwin", etc.) */
 static JSValue js_vm_getPlatform(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
@@ -1011,6 +1051,7 @@ static const JSCFunctionListEntry vm_funcs[] = {
 	QN_CFUNC_DEF("getPid", 0, js_vm_getPid),
 	QN_CFUNC_DEF("hrtime", 0, js_vm_hrtime),
 	QN_CFUNC_DEF("hrtimeBigInt", 0, js_vm_hrtimeBigInt),
+	QN_CFUNC_DEF("eventLoopUtilization", 0, js_vm_eventLoopUtilization),
 	QN_CFUNC_DEF("getPlatform", 0, js_vm_getPlatform),
 	QN_CFUNC_DEF("getArch", 0, js_vm_getArch),
 	QN_CFUNC_DEF("getExecPath", 0, js_vm_getExecPath),
@@ -1139,6 +1180,8 @@ void qn_vm_init(JSContext *ctx) {
 		abort();
 	}
 	uv_loop_init(g_loop);
+	g_loop_metrics_enabled = 0;
+	g_loop_metrics_start_ns = 0;
 
 	/* Initialize three-handle pattern handles */
 	uv_prepare_init(g_loop, &g_prepare);
