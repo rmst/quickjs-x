@@ -228,19 +228,97 @@ static int load_ca_pem(trust_anchor_store_t *store, const char *path)
 }
 
 
-/* ---- Certificate chain loading (for server certs, raw DER) ---- */
+/* ---- Certificate chain and private key loading from PEM ---- */
 
-static int load_cert_chain_pem(const char *path,
-                                br_x509_certificate **out_chain,
-                                unsigned char ***out_bufs,
-                                size_t *out_len)
+static unsigned char *read_file_data(const char *path, size_t *out_len)
 {
 	FILE *f = fopen(path, "rb");
-	if (!f) return -1;
+	if (!f) return NULL;
 
+	unsigned char *data = NULL;
+	size_t len = 0, cap = 0;
+	unsigned char buf[8192];
+
+	for (;;) {
+		size_t n = fread(buf, 1, sizeof(buf), f);
+		if (n > 0) {
+			if (len + n > cap) {
+				size_t new_cap = cap ? cap * 2 : 8192;
+				while (new_cap < len + n) new_cap *= 2;
+				unsigned char *p = realloc(data, new_cap);
+				if (!p) {
+					free(data);
+					fclose(f);
+					return NULL;
+				}
+				data = p;
+				cap = new_cap;
+			}
+			memcpy(data + len, buf, n);
+			len += n;
+		}
+		if (n < sizeof(buf)) {
+			if (ferror(f)) {
+				free(data);
+				fclose(f);
+				return NULL;
+			}
+			break;
+		}
+	}
+
+	fclose(f);
+	*out_len = len;
+	return data;
+}
+
+static int append_cert_to_chain(br_x509_certificate **chain,
+                                unsigned char ***bufs,
+                                size_t *num,
+                                size_t *cap,
+                                byte_vec_t *current)
+{
+	if (*num >= *cap) {
+		size_t new_cap = *cap ? *cap * 2 : 4;
+		br_x509_certificate *nc = realloc(*chain,
+			new_cap * sizeof(br_x509_certificate));
+		if (!nc) return -1;
+		*chain = nc;
+
+		unsigned char **nb = realloc(*bufs,
+			new_cap * sizeof(unsigned char *));
+		if (!nb) return -1;
+		*bufs = nb;
+		*cap = new_cap;
+	}
+
+	size_t der_len;
+	unsigned char *der = bv_take(current, &der_len);
+	if (!der) return -1;
+	(*bufs)[*num] = der;
+	(*chain)[*num].data = der;
+	(*chain)[*num].data_len = der_len;
+	(*num)++;
+	return 0;
+}
+
+static void free_cert_chain_parts(br_x509_certificate *chain,
+                                  unsigned char **bufs,
+                                  size_t num)
+{
+	for (size_t i = 0; i < num; i++)
+		free(bufs[i]);
+	free(bufs);
+	free(chain);
+}
+
+static int load_cert_chain_pem_data(const unsigned char *data, size_t len,
+                                    br_x509_certificate **out_chain,
+                                    unsigned char ***out_bufs,
+                                    size_t *out_len)
+{
 	br_pem_decoder_context pem;
 	br_pem_decoder_init(&pem);
-	unsigned char buf[8192];
 	int in_cert = 0;
 	byte_vec_t current;
 	bv_init(&current);
@@ -248,84 +326,72 @@ static int load_cert_chain_pem(const char *path,
 	br_x509_certificate *chain = NULL;
 	unsigned char **bufs = NULL;
 	size_t num = 0, cap = 0;
+	size_t off = 0;
 
-	for (;;) {
-		size_t n = fread(buf, 1, sizeof(buf), f);
-		if (n == 0) break;
+	while (off < len) {
+		size_t pushed = br_pem_decoder_push(&pem, data + off, len - off);
+		off += pushed;
 
-		size_t off = 0;
-		while (off < n) {
-			size_t pushed = br_pem_decoder_push(&pem, buf + off, n - off);
-			off += pushed;
-
-			int event = br_pem_decoder_event(&pem);
-			if (event == BR_PEM_BEGIN_OBJ) {
-				const char *name = br_pem_decoder_name(&pem);
-				if (strcmp(name, "CERTIFICATE") == 0 ||
-				    strcmp(name, "X509 CERTIFICATE") == 0 ||
-				    strcmp(name, "TRUSTED CERTIFICATE") == 0) {
-					bv_init(&current);
-					br_pem_decoder_setdest(&pem, bv_append, &current);
-					in_cert = 1;
-				} else {
-					in_cert = 0;
-					br_pem_decoder_setdest(&pem, NULL, NULL);
-				}
-			} else if (event == BR_PEM_END_OBJ && in_cert) {
-				if (num >= cap) {
-					size_t new_cap = cap ? cap * 2 : 4;
-					br_x509_certificate *nc = realloc(chain, new_cap * sizeof(br_x509_certificate));
-					unsigned char **nb = realloc(bufs, new_cap * sizeof(unsigned char *));
-					if (!nc || !nb) {
-						/* On partial realloc success, the original pointer
-						 * is still valid — use it for cleanup below */
-						if (nc) chain = nc;
-						if (nb) bufs = nb;
-						bv_clear(&current);
-						in_cert = 0;
-						goto done_reading;
-					}
-					chain = nc;
-					bufs = nb;
-					cap = new_cap;
-				}
-				size_t der_len;
-				unsigned char *der = bv_take(&current, &der_len);
-				bufs[num] = der;
-				chain[num].data = der;
-				chain[num].data_len = der_len;
-				num++;
+		int event = br_pem_decoder_event(&pem);
+		if (event == BR_PEM_BEGIN_OBJ) {
+			const char *name = br_pem_decoder_name(&pem);
+			if (strcmp(name, "CERTIFICATE") == 0 ||
+			    strcmp(name, "X509 CERTIFICATE") == 0 ||
+			    strcmp(name, "TRUSTED CERTIFICATE") == 0) {
+				bv_init(&current);
+				br_pem_decoder_setdest(&pem, bv_append, &current);
+				in_cert = 1;
+			} else {
 				in_cert = 0;
-			} else if (event == BR_PEM_ERROR) {
-				if (in_cert) bv_clear(&current);
-				break;
+				br_pem_decoder_setdest(&pem, NULL, NULL);
 			}
+		} else if (event == BR_PEM_END_OBJ && in_cert) {
+			if (append_cert_to_chain(&chain, &bufs, &num, &cap,
+			                         &current) < 0) {
+				bv_clear(&current);
+				goto fail;
+			}
+			in_cert = 0;
+		} else if (event == BR_PEM_ERROR) {
+			if (in_cert) bv_clear(&current);
+			goto fail;
 		}
 	}
 
-done_reading:
-	fclose(f);
-
-	if (num == 0) {
-		free(chain);
-		free(bufs);
-		return -1;
+	if (in_cert) {
+		bv_clear(&current);
+		goto fail;
 	}
+	if (num == 0)
+		goto fail;
 
 	*out_chain = chain;
 	*out_bufs = bufs;
 	*out_len = num;
 	return (int)num;
+
+fail:
+	free_cert_chain_parts(chain, bufs, num);
+	return -1;
 }
 
-
-/* ---- Private key loading from PEM ---- */
-
-static int load_private_key_pem(const char *path, br_skey_decoder_context *skey)
+static int load_cert_chain_pem(const char *path,
+                               br_x509_certificate **out_chain,
+                               unsigned char ***out_bufs,
+                               size_t *out_len)
 {
-	FILE *f = fopen(path, "rb");
-	if (!f) return -1;
+	size_t len;
+	unsigned char *data = read_file_data(path, &len);
+	if (!data) return -1;
+	int ret = load_cert_chain_pem_data(data, len,
+		out_chain, out_bufs, out_len);
+	free(data);
+	return ret;
+}
 
+static int load_private_key_pem_data(const unsigned char *data, size_t len,
+                                     br_skey_decoder_context *skey)
+{
 	br_pem_decoder_context pem;
 	br_pem_decoder_init(&pem);
 	br_skey_decoder_init(skey);
@@ -334,50 +400,54 @@ static int load_private_key_pem(const char *path, br_skey_decoder_context *skey)
 	bv_init(&current);
 	int in_key = 0;
 	int found = 0;
-	unsigned char buf[8192];
+	size_t off = 0;
 
-	for (;;) {
-		size_t n = fread(buf, 1, sizeof(buf), f);
-		if (n == 0) break;
+	while (off < len) {
+		size_t pushed = br_pem_decoder_push(&pem, data + off, len - off);
+		off += pushed;
 
-		size_t off = 0;
-		while (off < n) {
-			size_t pushed = br_pem_decoder_push(&pem, buf + off, n - off);
-			off += pushed;
-
-			int event = br_pem_decoder_event(&pem);
-			if (event == BR_PEM_BEGIN_OBJ) {
-				const char *name = br_pem_decoder_name(&pem);
-				if (strcmp(name, "PRIVATE KEY") == 0 ||
-				    strcmp(name, "RSA PRIVATE KEY") == 0 ||
-				    strcmp(name, "EC PRIVATE KEY") == 0) {
-					bv_init(&current);
-					br_pem_decoder_setdest(&pem, bv_append, &current);
-					in_key = 1;
-				} else {
-					in_key = 0;
-					br_pem_decoder_setdest(&pem, NULL, NULL);
-				}
-			} else if (event == BR_PEM_END_OBJ && in_key) {
-				size_t der_len;
-				unsigned char *der = bv_take(&current, &der_len);
-				br_skey_decoder_push(skey, der, der_len);
-				free(der);
-				found = 1;
+		int event = br_pem_decoder_event(&pem);
+		if (event == BR_PEM_BEGIN_OBJ) {
+			const char *name = br_pem_decoder_name(&pem);
+			if (strcmp(name, "PRIVATE KEY") == 0 ||
+			    strcmp(name, "RSA PRIVATE KEY") == 0 ||
+			    strcmp(name, "EC PRIVATE KEY") == 0) {
+				bv_init(&current);
+				br_pem_decoder_setdest(&pem, bv_append, &current);
+				in_key = 1;
+			} else {
 				in_key = 0;
-			} else if (event == BR_PEM_ERROR) {
-				if (in_key) bv_clear(&current);
-				break;
+				br_pem_decoder_setdest(&pem, NULL, NULL);
 			}
+		} else if (event == BR_PEM_END_OBJ && in_key) {
+			size_t der_len;
+			unsigned char *der = bv_take(&current, &der_len);
+			if (!der) return -1;
+			br_skey_decoder_push(skey, der, der_len);
+			free(der);
+			found = 1;
+			in_key = 0;
+			break;
+		} else if (event == BR_PEM_ERROR) {
+			if (in_key) bv_clear(&current);
+			break;
 		}
-		if (found) break;
 	}
 
-	fclose(f);
-
+	if (in_key) bv_clear(&current);
 	if (!found || br_skey_decoder_last_error(skey) != 0)
 		return -1;
 	return 0;
+}
+
+static int load_private_key_pem(const char *path, br_skey_decoder_context *skey)
+{
+	size_t len;
+	unsigned char *data = read_file_data(path, &len);
+	if (!data) return -1;
+	int ret = load_private_key_pem_data(data, len, skey);
+	free(data);
+	return ret;
 }
 
 
@@ -582,6 +652,23 @@ static void free_server_cred(tls_server_cred_t *cred) {
 	free(cred);
 }
 
+static JSValue server_cred_to_js(JSContext *ctx, tls_server_cred_t *cred)
+{
+	cred->key_type = br_skey_decoder_key_type(&cred->skey);
+	if (cred->key_type == 0) {
+		free_server_cred(cred);
+		return JS_ThrowTypeError(ctx, "TLS: unsupported key type");
+	}
+
+	JSValue obj = JS_NewObjectClass(ctx, tls_server_cred_class_id);
+	if (JS_IsException(obj)) {
+		free_server_cred(cred);
+		return obj;
+	}
+	JS_SetOpaque(obj, cred);
+	return obj;
+}
+
 static JSValue js_tls_load_server_cert(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv)
 {
@@ -619,19 +706,55 @@ static JSValue js_tls_load_server_cert(JSContext *ctx, JSValueConst this_val,
 		return JS_ThrowTypeError(ctx, "TLS: failed to load private key");
 	}
 
-	cred->key_type = br_skey_decoder_key_type(&cred->skey);
-	if (cred->key_type == 0) {
-		free_server_cred(cred);
-		return JS_ThrowTypeError(ctx, "TLS: unsupported key type");
+	return server_cred_to_js(ctx, cred);
+}
+
+/*
+ * tlsLoadServerCertPem(certPem, keyPem) -> TLSServerCred object
+ */
+static JSValue js_tls_load_server_cert_pem(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv)
+{
+	size_t cert_len = 0;
+	const char *cert_pem = JS_ToCStringLen(ctx, &cert_len, argv[0]);
+	if (!cert_pem)
+		return JS_EXCEPTION;
+	size_t key_len = 0;
+	const char *key_pem = JS_ToCStringLen(ctx, &key_len, argv[1]);
+	if (!key_pem) {
+		JS_FreeCString(ctx, cert_pem);
+		return JS_EXCEPTION;
 	}
 
-	JSValue obj = JS_NewObjectClass(ctx, tls_server_cred_class_id);
-	if (JS_IsException(obj)) {
-		free_server_cred(cred);
-		return obj;
+	tls_server_cred_t *cred = calloc(1, sizeof(tls_server_cred_t));
+	if (!cred) {
+		JS_FreeCString(ctx, cert_pem);
+		JS_FreeCString(ctx, key_pem);
+		return JS_ThrowOutOfMemory(ctx);
 	}
-	JS_SetOpaque(obj, cred);
-	return obj;
+
+	int ncerts = load_cert_chain_pem_data((const unsigned char *)cert_pem,
+	                                      cert_len, &cred->chain,
+	                                      &cred->cert_bufs,
+	                                      &cred->chain_len);
+	JS_FreeCString(ctx, cert_pem);
+
+	if (ncerts <= 0) {
+		JS_FreeCString(ctx, key_pem);
+		free(cred);
+		return JS_ThrowTypeError(ctx, "TLS: failed to load certificate chain");
+	}
+
+	int ret = load_private_key_pem_data((const unsigned char *)key_pem,
+	                                    key_len, &cred->skey);
+	JS_FreeCString(ctx, key_pem);
+
+	if (ret < 0) {
+		free_server_cred(cred);
+		return JS_ThrowTypeError(ctx, "TLS: failed to load private key");
+	}
+
+	return server_cred_to_js(ctx, cred);
 }
 
 /*
@@ -1792,6 +1915,7 @@ static const JSCFunctionListEntry js_crypto_funcs[] = {
 	/* TLS engine */
 	JS_CFUNC_DEF("tlsLoadCACerts", 1, js_tls_load_ca_certs),
 	JS_CFUNC_DEF("tlsLoadServerCert", 2, js_tls_load_server_cert),
+	JS_CFUNC_DEF("tlsLoadServerCertPem", 2, js_tls_load_server_cert_pem),
 	JS_CFUNC_DEF("tlsConnect", 3, js_tls_connect),
 	JS_CFUNC_DEF("tlsAccept", 2, js_tls_accept),
 	JS_CFUNC_DEF("tlsState", 1, js_tls_state),

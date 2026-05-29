@@ -11,24 +11,57 @@
 
 import {
 	tlsConnect as _tlsConnect, tlsAccept as _tlsAccept,
-	tlsLoadCACerts, tlsCaCertCount, tlsLoadServerCert,
+	tlsLoadCACerts, tlsCaCertCount, tlsLoadServerCert, tlsLoadServerCertPem,
 	tlsState, tlsError, tlsPeerLeafDer as _tlsPeerLeafDer,
 	tlsSendApp, tlsRecvApp, tlsFlush as _tlsFlush, tlsClose as _tlsClose,
 	tlsGetSendRec, tlsSendRecAck, tlsRecvRecPush,
 	hashInit, hashUpdate, hashOut,
 	TLS_CLOSED, TLS_SENDREC, TLS_RECVREC, TLS_SENDAPP, TLS_RECVAPP,
 } from 'qn:crypto'
+import { existsSync } from 'node:fs'
 import {
 	readStart, readStop, write as _streamWrite,
-	close as _streamClose, setOnRead,
+	setOnRead,
 } from 'qn/uv-stream'
 
 export {
 	tlsLoadCACerts as loadCACerts,
 	tlsCaCertCount as caCertCount,
 	tlsLoadServerCert as loadServerCert,
+	tlsLoadServerCertPem as loadServerCertPem,
 }
 export { TLS_CLOSED, TLS_SENDREC, TLS_RECVREC, TLS_SENDAPP, TLS_RECVAPP }
+
+const SYSTEM_CA_PATHS = [
+	'/etc/ssl/certs/ca-certificates.crt',
+	'/etc/pki/tls/certs/ca-bundle.crt',
+	'/etc/ssl/cert.pem',
+	'/etc/ssl/ca-bundle.pem',
+	'/usr/local/share/certs/ca-root-nss.crt',
+	'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+]
+
+let _caCertsLoaded = false
+
+export function ensureCACerts() {
+	if (_caCertsLoaded) return
+	_caCertsLoaded = true
+
+	const sslCertFile = globalThis.process?.env?.SSL_CERT_FILE
+	if (sslCertFile) {
+		tlsLoadCACerts(sslCertFile)
+	} else {
+		for (const p of SYSTEM_CA_PATHS) {
+			if (existsSync(p)) {
+				tlsLoadCACerts(p)
+				break
+			}
+		}
+	}
+
+	const extraCerts = globalThis.process?.env?.NODE_EXTRA_CA_CERTS
+	if (extraCerts) tlsLoadCACerts(extraCerts)
+}
 
 /* Per-connection pin options, set via connect() and consumed by handshake(). */
 const _pinOpts = new WeakMap()
@@ -39,6 +72,9 @@ const _pinOpts = new WeakMap()
  * @param {string} hostname  Server hostname (used for SNI + certificate
  *                           subject matching).
  * @param {object} [opts]    qn-specific options (not aliased to node:tls).
+ *   opts.rejectUnauthorized If false, bypass BearSSL chain / hostname
+ *                           verification. This is insecure and intended only
+ *                           for node:https compatibility.
  *   opts.pin                Optional pin spec. If set, handshake() will
  *                           verify it after the BearSSL engine is happy:
  *     pin.certSha256        Base64 SHA-256 of full leaf cert DER, or array.
@@ -52,7 +88,7 @@ const _pinOpts = new WeakMap()
  */
 export function connect(hostname, opts) {
 	const pin = opts && opts.pin ? _normalizePin(opts.pin) : null
-	const skip = pin && pin.trustOnlyPin ? 1 : 0
+	const skip = opts?.rejectUnauthorized === false || (pin && pin.trustOnlyPin) ? 1 : 0
 	const conn = _tlsConnect(-1, hostname, skip)
 	if (pin) _pinOpts.set(conn, pin)
 	return conn

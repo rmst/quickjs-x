@@ -231,6 +231,17 @@ Notes: `utf8` is the only supported text encoding (no latin1, hex, base64, etc.)
 | `http.request` / `http.get` (client) | ✅ | HTTP/1.1 over TCP and Unix sockets; no Agent pooling |
 | `http.Agent` | ❌ | |
 
+### node:https
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `https.createServer` | ✅ | HTTP/1.1 over TLS; `key`/`cert` PEM strings or Buffers; qn-specific `keyFile`/`certFile` also accepted |
+| `https.request` / `https.get` | ✅ | TLS client over TCP; system CAs, `NODE_EXTRA_CA_CERTS`, `servername`, and `rejectUnauthorized: false`; no Agent pooling |
+| `IncomingMessage` / `ServerResponse` / `STATUS_CODES` | ✅ | Re-exported/shared with `node:http` |
+| `https.Agent` / `globalAgent` | ⚠️ | Minimal no-op compatibility objects; pooling and Agent options are unsupported |
+| Custom CA/client cert/SNI/ALPN/cipher options | ❌ | Throws explicit errors |
+| Unix domain sockets | ❌ | Throws |
+
 ### node:child_process
 
 | Function | Status | Notes |
@@ -471,7 +482,7 @@ Notes:
 
 The following modules are not implemented. Importing them throws a `NodeCompatibilityError` with a descriptive message.
 
-`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:https`, `node:inspector`, `node:punycode`, `node:querystring`, `node:repl`, `node:string_decoder`, `node:tls`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
+`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:inspector`, `node:punycode`, `node:querystring`, `node:repl`, `node:string_decoder`, `node:tls`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
 
 ---
 

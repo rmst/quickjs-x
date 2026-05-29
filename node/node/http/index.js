@@ -399,17 +399,29 @@ export class ClientRequest extends EventEmitter {
 	#port
 	#socketPath
 	#highWaterMark = 64 * 1024
+	#defaultPort
+	#createConnection
+	#isDefaultPort
+	#connectionOptions
 
-	constructor(input, options, callback) {
+	constructor(input, options, callback, transport = {}) {
 		super()
 		const normalized = normalizeRequestArgs(input, options, callback)
 		this.#options = normalized.options
+		const protocol = transport.protocol || 'http:'
+		if (this.#options.protocol && this.#options.protocol !== protocol) {
+			throw new TypeError(`Protocol "${this.#options.protocol}" not supported. Expected "${protocol}"`)
+		}
 		this.#headers = normalizeHeaders(this.#options.headers)
 		this.#method = String(this.#options.method || 'GET').toUpperCase()
 		this.#path = this.#options.path || '/'
 		this.#socketPath = this.#options.socketPath
 		this.#host = this.#options.hostname || this.#options.host || 'localhost'
-		this.#port = this.#options.port ? Number(this.#options.port) : 80
+		this.#defaultPort = transport.defaultPort || 80
+		this.#port = this.#options.port ? Number(this.#options.port) : this.#defaultPort
+		this.#createConnection = transport.createConnection || createConnection
+		this.#isDefaultPort = transport.isDefaultPort || ((port) => port === this.#defaultPort)
+		this.#connectionOptions = transport.connectionOptions || (() => ({}))
 
 		if (normalized.callback) this.once('response', normalized.callback)
 		this.#connect()
@@ -485,8 +497,8 @@ export class ClientRequest extends EventEmitter {
 	#connect() {
 		const connectOptions = this.#socketPath
 			? { path: this.#socketPath }
-			: { host: this.#host, port: this.#port }
-		this.#socket = createConnection(connectOptions, () => {
+			: { ...this.#connectionOptions(this.#options), host: this.#host, port: this.#port }
+		this.#socket = this.#createConnection(connectOptions, () => {
 			this.#connected = true
 			this.emit('socket', this.#socket)
 			this.#flush()
@@ -512,7 +524,7 @@ export class ClientRequest extends EventEmitter {
 			this.#headers.get('host')?.value || this.#host,
 			this.#port,
 			Array.from(this.#headers.values()).map(({ key, value }) => [key, value]),
-			this.#port === 80,
+			this.#isDefaultPort(this.#port),
 		)
 		this.#headerSent = true
 		const ret = this.#writeRaw(req)
@@ -635,6 +647,7 @@ export class HTTPServer extends EventEmitter {
 			requestListener = options
 			options = {}
 		}
+		const server = options?._server
 		this.#maxHeaderSize = options?.maxHeaderSize ?? DEFAULT_MAX_HEADER_SIZE
 		this.#maxHeaderCount = options?.maxHeaderCount ?? DEFAULT_MAX_HEADER_COUNT
 		this.#headerTimeout = options?.headerTimeout ?? DEFAULT_HEADER_TIMEOUT
@@ -642,7 +655,7 @@ export class HTTPServer extends EventEmitter {
 		if (requestListener) {
 			this.on('request', requestListener)
 		}
-		this.#server = createTcpServer()
+		this.#server = server || createTcpServer()
 		this.#server.on('error', (err) => this.emit('error', err))
 		this.#server.on('close', () => this.emit('close'))
 

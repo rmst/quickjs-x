@@ -14,7 +14,6 @@ const STUB_MODULES = [
 	"node:dns",
 	"node:domain",
 	"node:http2",
-	"node:https",
 	"node:inspector",
 	"node:punycode",
 	"node:querystring",

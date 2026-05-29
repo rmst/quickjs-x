@@ -12,7 +12,6 @@ import {
 import { getaddrinfo as _getaddrinfo } from 'qn_uv_dns'
 import * as tls from 'qn:tls'
 import { getPin } from 'qn:fetch'
-import { existsSync } from 'node:fs'
 import { Headers } from './Headers.js'
 import { Request } from './Request.js'
 import { Response } from './Response.js'
@@ -245,38 +244,6 @@ function pipedBody(reader, leftover, contentLength, isChunked, onComplete) {
 	return body
 }
 
-const SYSTEM_CA_PATHS = [
-	'/etc/ssl/certs/ca-certificates.crt',
-	'/etc/pki/tls/certs/ca-bundle.crt',
-	'/etc/ssl/cert.pem',
-	'/etc/ssl/ca-bundle.pem',
-	'/usr/local/share/certs/ca-root-nss.crt',
-	'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
-]
-
-let _caCertsLoaded = false
-function ensureCACerts() {
-	if (_caCertsLoaded) return
-	_caCertsLoaded = true
-
-	const sslCertFile = globalThis.process?.env?.SSL_CERT_FILE
-	if (sslCertFile) {
-		tls.loadCACerts(sslCertFile)
-	} else {
-		for (const p of SYSTEM_CA_PATHS) {
-			if (existsSync(p)) {
-				tls.loadCACerts(p)
-				break
-			}
-		}
-	}
-
-	const extraCerts = globalThis.process?.env?.NODE_EXTRA_CA_CERTS
-	if (extraCerts) {
-		tls.loadCACerts(extraCerts)
-	}
-}
-
 const MAX_REDIRECTS = 20
 const POOL_IDLE_TIMEOUT = 30_000  // close idle connections after 30s
 const MAX_CONNS_PER_ORIGIN = 6    // match browser limits
@@ -472,7 +439,7 @@ async function createConnection(handle, host, isHttps, signal, pin) {
 	let tlsConn = null
 
 	if (isHttps) {
-		ensureCACerts()
+		tls.ensureCACerts()
 		tlsConn = tls.connect(host, pin ? { pin } : undefined)
 		try {
 			await tls.handshake(tlsConn, transport, signal)

@@ -46,10 +46,15 @@ export function socketReader(socket) {
 		ended = true
 		if (waiter) { const r = waiter; waiter = null; r(null) }
 	}
+	const onClose = () => {
+		ended = true
+		if (waiter) { const r = waiter; waiter = null; r(null) }
+	}
 
 	socket.on('data', onData)
 	socket.on('end', onEnd)
 	socket.on('error', onError)
+	socket.on('close', onClose)
 
 	return {
 		async read(buf, off, len) {
@@ -73,6 +78,7 @@ export function socketReader(socket) {
 			socket.off('data', onData)
 			socket.off('end', onEnd)
 			socket.off('error', onError)
+			socket.off('close', onClose)
 			socket.destroy()
 		},
 		detach() {
@@ -80,6 +86,7 @@ export function socketReader(socket) {
 			socket.off('data', onData)
 			socket.off('end', onEnd)
 			socket.off('error', onError)
+			socket.off('close', onClose)
 			if (socket.isPaused) socket.resume()
 		},
 	}

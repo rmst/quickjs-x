@@ -7,7 +7,7 @@
 export {
 	// TLS engine
 	tlsConnect, tlsAccept,
-	tlsLoadCACerts, tlsCaCertCount, tlsLoadServerCert,
+	tlsLoadCACerts, tlsCaCertCount, tlsLoadServerCert, tlsLoadServerCertPem,
 	tlsState, tlsError, tlsPeerLeafDer,
 	tlsSendApp, tlsRecvApp, tlsFlush, tlsClose,
 	tlsGetSendRec, tlsSendRecAck, tlsRecvRecPush,
