@@ -24,6 +24,12 @@
 void qn_vm_init(JSContext *ctx);
 
 /*
+ * Initialize libuv's argv-dependent process state, including process title
+ * storage. Returns the argv array to pass to js_std_add_helpers().
+ */
+char **qn_vm_setup_args(int argc, char **argv);
+
+/*
  * Clean up the event loop. Must be called before JS_FreeContext().
  *
  * - Frees all timers and poll handles

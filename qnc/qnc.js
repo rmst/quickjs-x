@@ -868,6 +868,7 @@ function generateCFile(entries, importMap, initModules, embeddedNames,
 {
   JSRuntime *rt;
   JSContext *ctx;
+  argv = qn_vm_setup_args(argc, argv);
   rt = JS_NewRuntime();
   js_std_set_worker_new_context_func(JS_NewCustomContext);
   js_std_init_handlers(rt);\n`

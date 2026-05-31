@@ -225,6 +225,10 @@ uv_loop_t *js_uv_loop(JSContext *ctx) {
 	return g_loop;
 }
 
+char **qn_vm_setup_args(int argc, char **argv) {
+	return uv_setup_args(argc, argv);
+}
+
 /* --------------------------------------------------------------------------
  * Promise rejection tracking
  *
@@ -760,6 +764,48 @@ static JSValue js_vm_getPid(JSContext *ctx, JSValueConst this_val,
 	return JS_NewInt32(ctx, uv_os_getpid());
 }
 
+/* JS: getProcessTitle() → string */
+static JSValue js_vm_getProcessTitle(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+	char stack_buf[4096];
+	int r = uv_get_process_title(stack_buf, sizeof(stack_buf));
+	if (r == 0)
+		return JS_NewString(ctx, stack_buf);
+	if (r != UV_ENOBUFS)
+		return qn_throw_errno(ctx, r);
+
+	size_t size = sizeof(stack_buf) * 2;
+	while (size <= 1024 * 1024) {
+		char *buf = js_malloc(ctx, size);
+		if (!buf)
+			return JS_EXCEPTION;
+		r = uv_get_process_title(buf, size);
+		if (r == 0) {
+			JSValue ret = JS_NewString(ctx, buf);
+			js_free(ctx, buf);
+			return ret;
+		}
+		js_free(ctx, buf);
+		if (r != UV_ENOBUFS)
+			return qn_throw_errno(ctx, r);
+		size *= 2;
+	}
+	return qn_throw_errno(ctx, UV_ENOBUFS);
+}
+
+/* JS: setProcessTitle(title) → undefined */
+static JSValue js_vm_setProcessTitle(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+	const char *title = JS_ToCString(ctx, argv[0]);
+	if (!title)
+		return JS_EXCEPTION;
+	int r = uv_set_process_title(title);
+	JS_FreeCString(ctx, title);
+	if (r != 0)
+		return qn_throw_errno(ctx, r);
+	return JS_UNDEFINED;
+}
+
 /* JS: hrtime() → number (milliseconds, high resolution)
  * Uses uv_hrtime() which returns nanoseconds. */
 static JSValue js_vm_hrtime(JSContext *ctx, JSValueConst this_val,
@@ -1049,6 +1095,8 @@ static const JSCFunctionListEntry vm_funcs[] = {
 	QN_CFUNC_DEF("chdir", 1, js_vm_chdir),
 	QN_CFUNC_DEF("kill", 2, js_vm_kill),
 	QN_CFUNC_DEF("getPid", 0, js_vm_getPid),
+	QN_CFUNC_DEF("getProcessTitle", 0, js_vm_getProcessTitle),
+	QN_CFUNC_DEF("setProcessTitle", 1, js_vm_setProcessTitle),
 	QN_CFUNC_DEF("hrtime", 0, js_vm_hrtime),
 	QN_CFUNC_DEF("hrtimeBigInt", 0, js_vm_hrtimeBigInt),
 	QN_CFUNC_DEF("eventLoopUtilization", 0, js_vm_eventLoopUtilization),

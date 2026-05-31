@@ -72,6 +72,40 @@ describe('node:process shim', () => {
 		assert.deepStrictEqual(JSON.parse(output), { pidType: 'number', isPositive: true })
 	})
 
+	test('process.title gets, sets, and exports named value', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import process, { title } from 'node:process'
+
+			const old = process.title
+			try {
+				process.title = 'qn-title'
+				const afterString = process.title
+				process.title = 12345
+				const afterNumber = process.title
+				let symbolError
+				try { process.title = Symbol('title') } catch (e) { symbolError = e.name }
+				console.log(JSON.stringify({
+					initialType: typeof old,
+					namedTitleType: typeof title,
+					afterString,
+					afterNumber,
+					symbolError,
+				}))
+			} finally {
+				process.title = old
+			}
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), {
+			initialType: 'string',
+			namedTitleType: 'string',
+			afterString: 'qn-title',
+			afterNumber: '12345',
+			symbolError: 'TypeError',
+		})
+	})
+
 	test('process.execPath is an absolute path to the interpreter', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import process from 'node:process'

@@ -360,6 +360,7 @@ Notes: `Readable`/`Writable` are fd-backed; `Transform`/`Duplex` are generic and
 | `argv` / `env` / `pid` / `platform` / `version` | ✅ | `env` is a full Proxy |
 | `exit` / `exitCode` | ✅ | |
 | `cwd` / `chdir` / `kill` | ✅ | |
+| `title` | ✅ | Via `uv_get_process_title()` / `uv_set_process_title()` |
 | `stdin` / `stdout` / `stderr` | ✅ | `write`, `isTTY`, `columns`/`rows` |
 | `on` / `once` / `off` / `removeListener` (`exit`, signals) | ✅ | Via `uv_signal_t` |
 | `nextTick` | ✅ | Via `queueMicrotask` |

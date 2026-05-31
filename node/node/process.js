@@ -7,6 +7,7 @@ import {
 	getuid as _getuid, getgid as _getgid, getgroups as _getgroups,
 	getUmask as _getUmask, setUmask as _setUmask,
 	setuid as _setuid, setgid as _setgid, setgroups as _setgroups,
+	getProcessTitle as _getProcessTitle, setProcessTitle as _setProcessTitle,
 	hrtimeBigInt as _hrtimeBigInt,
 } from 'qn_vm';
 import { ReadStream, WriteStream } from 'node:tty';
@@ -257,6 +258,13 @@ const process = {
     return _getPid();
   },
 
+  get title() {
+    return _getProcessTitle();
+  },
+  set title(value) {
+    _setProcessTitle(value);
+  },
+
   // High-resolution time
   hrtime,
 
@@ -386,6 +394,6 @@ const process = {
 export default process;
 
 // Also export individual properties for named imports
-export const { argv, execPath, exit, exitCode, cwd, chdir, kill, pid, umask, getuid, getgid, getgroups, setuid, setgid, setgroups, platform, arch, version, versions, stdin, stdout, stderr } = process;
+export const { argv, execPath, exit, exitCode, cwd, chdir, kill, pid, title, umask, getuid, getgid, getgroups, setuid, setgid, setgroups, platform, arch, version, versions, stdin, stdout, stderr } = process;
 export { hrtime };
 export const env = process.env;  // Export env separately to preserve the Proxy
