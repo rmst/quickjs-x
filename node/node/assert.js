@@ -447,18 +447,8 @@ assert.doesNotThrow = function doesNotThrow(fn, error, message) {
 			})
 		}
 
-		// RegExp: check if error message matches
-		if (error instanceof RegExp && error.test(actual?.message)) {
-			throw new AssertionError({
-				message: message || `Got unwanted exception: ${actual?.message}`,
-				actual,
-				expected: error,
-				operator: 'doesNotThrow'
-			})
-		}
-
-		// Function: check instanceof
-		if (typeof error === 'function' && actual instanceof error) {
+		const mismatch = validateError(actual, error, message, 'doesNotThrow')
+		if (!mismatch) {
 			throw new AssertionError({
 				message: message || `Got unwanted exception: ${actual?.message || actual}`,
 				actual,
@@ -472,9 +462,13 @@ assert.doesNotThrow = function doesNotThrow(fn, error, message) {
 	}
 }
 
+function isErrorConstructor(fn) {
+	return fn === Error || fn.prototype instanceof Error
+}
+
 // Validate a caught error against the same error spec shapes accepted by
-// assert.throws (RegExp, constructor, validation object). Returns null on
-// match, or an AssertionError describing the mismatch.
+// assert.throws (RegExp, constructor, predicate, validation object). Returns
+// null on match, or an AssertionError describing the mismatch.
 function validateError(actual, error, message, operator) {
 	if (error === undefined) return null
 
@@ -491,9 +485,21 @@ function validateError(actual, error, message, operator) {
 	}
 
 	if (typeof error === 'function') {
-		if (!(actual instanceof error)) {
+		if (error.prototype !== undefined && actual instanceof error) return null
+
+		if (isErrorConstructor(error)) {
 			return new AssertionError({
 				message: message || `The error is not an instance of ${error.name || 'expected constructor'}`,
+				actual,
+				expected: error,
+				operator,
+			})
+		}
+
+		const result = error.call({}, actual)
+		if (result !== true) {
+			return new AssertionError({
+				message: message || `The ${error.name ? `"${error.name}" ` : ''}validation function is expected to return true. Received ${formatValue(result)}`,
 				actual,
 				expected: error,
 				operator,
@@ -614,16 +620,8 @@ assert.doesNotReject = async function doesNotReject(asyncFn, error, message) {
 		})
 	}
 
-	if (error instanceof RegExp && error.test(actual?.message)) {
-		throw new AssertionError({
-			message: message || `Got unwanted rejection: ${actual?.message}`,
-			actual,
-			expected: error,
-			operator: 'doesNotReject',
-		})
-	}
-
-	if (typeof error === 'function' && actual instanceof error) {
+	const mismatch = validateError(actual, error, message, 'doesNotReject')
+	if (!mismatch) {
 		throw new AssertionError({
 			message: message || `Got unwanted rejection: ${actual?.message || actual}`,
 			actual,

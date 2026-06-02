@@ -156,6 +156,51 @@ describe('node:assert shim', () => {
 		assert.deepStrictEqual(JSON.parse(output), { threw: true })
 	})
 
+	test('throws with predicate validator calls function with the thrown error', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let arrowSawCode = false
+			let normalSawCode = false
+			let normalSawThis = false
+			const throwCoded = () => {
+				const err = new Error('coded')
+				err.code = 'ERR_TEST'
+				throw err
+			}
+			assert.throws(throwCoded, (err) => {
+				arrowSawCode = err?.code === 'ERR_TEST'
+				return arrowSawCode
+			})
+			assert.throws(throwCoded, function validator(err) {
+				normalSawCode = err?.code === 'ERR_TEST'
+				normalSawThis = this && Object.getPrototypeOf(this) === Object.prototype
+				return normalSawCode
+			})
+			console.log(JSON.stringify({ arrowSawCode, normalSawCode, normalSawThis }))
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { arrowSawCode: true, normalSawCode: true, normalSawThis: true })
+	})
+
+	test('throws with predicate validator fails unless it returns true', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let threw = false
+			try {
+				assert.throws(() => {
+					throw new Error('coded')
+				}, () => 'truthy')
+			} catch (e) {
+				threw = e.name === 'AssertionError'
+			}
+			console.log(JSON.stringify({ threw }))
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
 	test('throws with object validates properties', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import assert from 'node:assert'
@@ -213,6 +258,33 @@ describe('node:assert shim', () => {
 
 		const output = $`${bin} ${dir}/test.js`
 		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
+	test('doesNotThrow with predicate validator fails only when it matches', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			const throwCoded = () => {
+				const err = new Error('coded')
+				err.code = 'ERR_TEST'
+				throw err
+			}
+			let matched = false
+			let rethrew = false
+			try {
+				assert.doesNotThrow(throwCoded, (err) => err?.code === 'ERR_TEST')
+			} catch (e) {
+				matched = e.name === 'AssertionError'
+			}
+			try {
+				assert.doesNotThrow(throwCoded, (err) => err?.code === 'OTHER')
+			} catch (e) {
+				rethrew = e.code === 'ERR_TEST'
+			}
+			console.log(JSON.stringify({ matched, rethrew }))
+		`)
+
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { matched: true, rethrew: true })
 	})
 
 	test('named exports work', ({ bin, dir }) => {
@@ -323,6 +395,41 @@ describe('node:assert shim', () => {
 		assert.deepStrictEqual(JSON.parse(output), { passed: true })
 	})
 
+	test('rejects with predicate validator calls function with the rejected error', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let sawCode = false
+			await assert.rejects(async () => {
+				const err = new Error('coded')
+				err.code = 'ERR_TEST'
+				throw err
+			}, (err) => {
+				sawCode = err?.code === 'ERR_TEST'
+				return sawCode
+			})
+			console.log(JSON.stringify({ sawCode }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { sawCode: true })
+	})
+
+	test('rejects with predicate validator fails unless it returns true', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			let threw = false
+			try {
+				await assert.rejects(async () => {
+					throw new Error('coded')
+				}, () => 'truthy')
+			} catch (e) {
+				threw = e.name === 'AssertionError'
+			}
+			console.log(JSON.stringify({ threw }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
 	test('rejects throws TypeError when fn returns non-promise', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import assert from 'node:assert'
@@ -336,6 +443,32 @@ describe('node:assert shim', () => {
 		`)
 		const output = $`${bin} ${dir}/test.js`
 		assert.deepStrictEqual(JSON.parse(output), { threw: true })
+	})
+
+	test('doesNotReject with predicate validator fails only when it matches', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import assert from 'node:assert'
+			const rejectCoded = async () => {
+				const err = new Error('coded')
+				err.code = 'ERR_TEST'
+				throw err
+			}
+			let matched = false
+			let rethrew = false
+			try {
+				await assert.doesNotReject(rejectCoded, (err) => err?.code === 'ERR_TEST')
+			} catch (e) {
+				matched = e.name === 'AssertionError'
+			}
+			try {
+				await assert.doesNotReject(rejectCoded, (err) => err?.code === 'OTHER')
+			} catch (e) {
+				rethrew = e.code === 'ERR_TEST'
+			}
+			console.log(JSON.stringify({ matched, rethrew }))
+		`)
+		const output = $`${bin} ${dir}/test.js`
+		assert.deepStrictEqual(JSON.parse(output), { matched: true, rethrew: true })
 	})
 
 	test('doesNotReject passes when promise resolves', ({ bin, dir }) => {
