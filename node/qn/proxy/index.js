@@ -21,7 +21,12 @@ import { WebSocket, WebSocketServer } from 'ws'
 
 const HOP_BY_HOP = new Set([
 	'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-	'te', 'trailer', 'transfer-encoding', 'upgrade', 'host',
+	'te', 'trailer', 'transfer-encoding', 'upgrade',
+])
+
+const WS_HANDSHAKE_HEADERS = new Set([
+	'sec-websocket-extensions', 'sec-websocket-key',
+	'sec-websocket-protocol', 'sec-websocket-version',
 ])
 
 const WS_HIGH_WATER = 64 * 1024
@@ -93,9 +98,7 @@ async function forwardHTTP(req, res, target, timeout) {
 	const url = new URL(req.url, target)
 
 	const headers = filterHeaders(req.headers)
-	headers['x-forwarded-for'] = req.socket.remoteAddress
-	headers['x-forwarded-proto'] = 'http'
-	headers['x-forwarded-host'] = req.headers.host || ''
+	addForwardedHeaders(headers, req)
 
 	if (url.protocol === 'http:') {
 		await forwardHTTPWithRequest(req, res, url, headers, timeout)
@@ -277,8 +280,11 @@ function incomingBodyStream(req) {
 
 function forwardWS(wss, req, socket, head, target) {
 	const wsUrl = target.replace(/^http/, 'ws') + req.url
+	const headers = filterWebSocketHeaders(req.headers)
+	addForwardedHeaders(headers, req)
+	const protocols = parseWebSocketProtocols(req.headers['sec-websocket-protocol'])
 
-	const backend = new WebSocket(wsUrl)
+	const backend = new WebSocket(wsUrl, protocols, { headers })
 	backend.on('error', () => socket.destroy())
 
 	backend.on('open', () => {
@@ -322,4 +328,26 @@ function filterHeaders(headers) {
 			out[k] = Array.isArray(v) ? v.join(', ') : v
 	}
 	return out
+}
+
+function filterWebSocketHeaders(headers) {
+	const out = {}
+	for (const [k, v] of Object.entries(headers)) {
+		const name = k.toLowerCase()
+		if (!HOP_BY_HOP.has(name) && !WS_HANDSHAKE_HEADERS.has(name))
+			out[k] = Array.isArray(v) ? v.join(', ') : v
+	}
+	return out
+}
+
+function parseWebSocketProtocols(value) {
+	const header = Array.isArray(value) ? value.join(',') : value
+	if (!header) return []
+	return header.split(',').map(protocol => protocol.trim()).filter(Boolean)
+}
+
+function addForwardedHeaders(headers, req) {
+	headers['x-forwarded-for'] = req.socket.remoteAddress
+	headers['x-forwarded-proto'] = 'http'
+	headers['x-forwarded-host'] = req.headers.host || ''
 }

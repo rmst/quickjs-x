@@ -254,22 +254,23 @@ export function parseRequestHead(data) {
 /**
  * Build an HTTP/1.1 request string.
  *
- * Host and Connection are set by the transport — Host from the destination
- * URL, Connection because qn fetch always uses single-shot connections (no
- * keep-alive across requests). User-supplied headers with those names are
- * dropped so we never emit duplicates. RFC 7230 allows duplicates only for
- * comma-list headers, which Connection is, but some receivers' parsers
- * concatenate the values ("close, close") and then fail equality checks
- * like `conn === 'close'`, which silently flips them to keep-alive mode.
+ * Host and Connection are emitted by the transport. User-supplied headers
+ * with those names are skipped in the generic header loop so we never emit
+ * duplicates. RFC 7230 allows duplicates only for comma-list headers, which
+ * Connection is, but some receivers' parsers concatenate the values
+ * ("close, close") and then fail equality checks like `conn === 'close'`,
+ * which silently flips them to keep-alive mode.
  */
-export function buildRequest(method, path, host, port, headers, isDefaultPort) {
+export function buildRequest(method, path, host, port, headers, isDefaultPort, explicitHostHeader) {
 	if (/[\r\n]/.test(method))
 		throw new TypeError(`Invalid HTTP method: ${JSON.stringify(method)}`)
 	if (/[\r\n]/.test(path))
 		throw new TypeError('Invalid request path: contains CR or LF')
 	if (/[\r\n]/.test(host))
 		throw new TypeError('Invalid host: contains CR or LF')
-	const hostHeader = isDefaultPort ? host : `${host}:${port}`
+	const hostHeader = explicitHostHeader ?? (isDefaultPort ? host : `${host}:${port}`)
+	if (/[\r\n]/.test(hostHeader))
+		throw new TypeError('Invalid host header: contains CR or LF')
 	let req = `${method} ${path} HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n`
 	for (const [key, value] of headers) {
 		const lower = key.toLowerCase()

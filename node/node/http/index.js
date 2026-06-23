@@ -521,10 +521,11 @@ export class ClientRequest extends EventEmitter {
 		const req = buildRequest(
 			this.#method,
 			this.#path,
-			this.#headers.get('host')?.value || this.#host,
+			this.#host,
 			this.#port,
 			Array.from(this.#headers.values()).map(({ key, value }) => [key, value]),
 			this.#isDefaultPort(this.#port),
+			this.#headers.get('host')?.value,
 		)
 		this.#headerSent = true
 		const ret = this.#writeRaw(req)

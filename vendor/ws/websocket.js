@@ -721,7 +721,8 @@ function initAsClient(websocket, address, protocols, options) {
 	const onConnect = () => {
 		// Build and send the HTTP upgrade request
 		let request = `GET ${opts.path} HTTP/1.1\r\n`
-		request += `Host: ${opts.host}${+opts.port !== defaultPort ? ':' + opts.port : ''}\r\n`
+		if (!hasHeader(opts.headers, 'host'))
+			request += `Host: ${opts.host}${+opts.port !== defaultPort ? ':' + opts.port : ''}\r\n`
 		for (const [headerKey, value] of Object.entries(opts.headers)) {
 			request += `${headerKey}: ${value}\r\n`
 		}
@@ -836,6 +837,11 @@ function initAsClient(websocket, address, protocols, options) {
 		}, opts.handshakeTimeout)
 		websocket.once('open', () => clearTimeout(timer))
 	}
+}
+
+function hasHeader(headers, name) {
+	const lowerName = name.toLowerCase()
+	return Object.keys(headers).some(key => key.toLowerCase() === lowerName)
 }
 
 /**

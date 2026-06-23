@@ -65,6 +65,38 @@ describe('node:http Server', () => {
 		})
 	})
 
+	test('http.request preserves explicit Host header', ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+
+			const server = http.createServer((req, res) => {
+				res.end(req.headers.host)
+			})
+			await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+
+			const body = await new Promise((resolve, reject) => {
+				const req = http.request({
+					host: '127.0.0.1',
+					port: server.address().port,
+					path: '/',
+					headers: { Host: 'app.example.local' },
+				}, (res) => {
+					let body = ''
+					res.on('data', chunk => body += chunk)
+					res.on('end', () => resolve(body))
+				})
+				req.on('error', reject)
+				req.end()
+			})
+
+			console.log(body)
+			server.close()
+		`)
+		return execAsync(bin, [`${dir}/test.js`]).then(output => {
+			assert.equal(output, 'app.example.local')
+		})
+	})
+
 	testQnOnly('http.request finish waits for queued body writes', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import http from 'node:http'

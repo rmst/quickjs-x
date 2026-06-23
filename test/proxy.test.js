@@ -132,15 +132,21 @@ describe('qn:proxy', () => {
 	testQnOnly('sets X-Forwarded-* headers', async ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import http from 'node:http'
+			import { createConnection } from 'node:net'
 			import { createProxy } from 'qn:proxy'
 
 			const backend = http.createServer((req, res) => {
-				res.writeHead(200)
-				res.end(JSON.stringify({
+				const body = JSON.stringify({
+					host: req.headers.host,
 					xff: req.headers['x-forwarded-for'],
 					xfp: req.headers['x-forwarded-proto'],
 					xfh: req.headers['x-forwarded-host'],
-				}))
+				})
+				res.writeHead(200, {
+					'content-type': 'application/json',
+					'content-length': String(Buffer.byteLength(body)),
+				})
+				res.end(body)
 			})
 			await new Promise(r => backend.listen(0, '127.0.0.1', r))
 			const backendPort = backend.address().port
@@ -152,10 +158,18 @@ describe('qn:proxy', () => {
 			})
 			const proxyPort = proxy.address().port
 
-			const res = await fetch(\`http://127.0.0.1:\${proxyPort}/\`, {
-				headers: { host: 'myapp.example.com' },
+			const data = await new Promise((resolve, reject) => {
+				const client = createConnection(proxyPort, '127.0.0.1')
+				let response = ''
+				client.on('connect', () => {
+					client.write('GET / HTTP/1.1\\r\\nHost: myapp.example.com\\r\\nConnection: close\\r\\n\\r\\n')
+				})
+				client.on('data', chunk => response += chunk)
+				client.on('end', () => {
+					resolve(JSON.parse(response.split('\\r\\n\\r\\n')[1]))
+				})
+				client.on('error', reject)
 			})
-			const data = await res.json()
 
 			console.log(JSON.stringify(data))
 			await proxy.close()
@@ -163,9 +177,10 @@ describe('qn:proxy', () => {
 		`)
 		const output = await execAsync(bin, [`${dir}/test.js`])
 		const data = JSON.parse(output)
+		assert.strictEqual(data.host, 'myapp.example.com')
 		assert.ok(data.xff, 'x-forwarded-for should be set')
 		assert.strictEqual(data.xfp, 'http')
-		assert.ok(data.xfh, 'x-forwarded-host should be set')
+		assert.strictEqual(data.xfh, 'myapp.example.com')
 	})
 
 	testQnOnly('returns 404 when route returns null', async ({ bin, dir }) => {
@@ -295,6 +310,56 @@ describe('qn:proxy', () => {
 		assert.strictEqual(result.received, 'echo:hello')
 	})
 
+	testQnOnly('preserves Host header for WebSocket backend handshake', async ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+			import { WebSocket, WebSocketServer } from 'ws'
+			import { createProxy } from 'qn:proxy'
+
+			const backendHTTP = http.createServer()
+			const backendWS = new WebSocketServer({ server: backendHTTP })
+			backendWS.on('connection', (ws, req) => {
+				ws.send(JSON.stringify({
+					host: req.headers.host,
+					xfh: req.headers['x-forwarded-host'],
+				}))
+			})
+			await new Promise(r => backendHTTP.listen(0, '127.0.0.1', r))
+			const backendPort = backendHTTP.address().port
+
+			const proxy = await createProxy({
+				port: 0,
+				hostname: '127.0.0.1',
+				route: () => \`http://127.0.0.1:\${backendPort}\`,
+			})
+			const proxyPort = proxy.address().port
+
+			const client = new WebSocket(\`ws://127.0.0.1:\${proxyPort}/ws\`, {
+				headers: { host: 'preview.example.local' },
+			})
+
+			const received = await new Promise((resolve, reject) => {
+				const t = setTimeout(() => reject(new Error('ws timeout')), 5000)
+				client.on('message', (data) => {
+					clearTimeout(t)
+					resolve(JSON.parse(data.toString()))
+				})
+				client.on('error', (err) => { clearTimeout(t); reject(err) })
+			})
+
+			console.log(JSON.stringify(received))
+
+			await new Promise(r => { client.on('close', r); client.close() })
+			await proxy.close()
+			backendWS.close()
+			backendHTTP.close()
+		`)
+		const output = await execAsync(bin, [`${dir}/test.js`])
+		const result = JSON.parse(output)
+		assert.strictEqual(result.host, 'preview.example.local')
+		assert.strictEqual(result.xfh, 'preview.example.local')
+	})
+
 	testQnOnly('proxies WebSocket binary messages', async ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import http from 'node:http'
@@ -388,5 +453,133 @@ describe('qn:proxy', () => {
 		assert.strictEqual(result.a, 'backend-a')
 		assert.strictEqual(result.b, 'backend-b')
 		assert.strictEqual(result.c.status, 404)
+	})
+
+	testQnOnly('proxy CLI routes wildcard hosts with exact precedence', async ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import http from 'node:http'
+			import { spawn } from 'node:child_process'
+			import { writeFileSync } from 'node:fs'
+			import { createConnection } from 'node:net'
+
+			const qn = ${JSON.stringify(bin)}
+			const configPath = ${JSON.stringify(`${dir}/homeproxy.conf`)}
+			const runnerPath = ${JSON.stringify(`${dir}/proxy-cli-runner.js`)}
+
+			const makeBackend = async (name) => {
+				const server = http.createServer((req, res) => {
+					const body = JSON.stringify({
+						name,
+						host: req.headers.host,
+						xfh: req.headers['x-forwarded-host'],
+					})
+					res.writeHead(200, {
+						'content-type': 'application/json',
+						'content-length': String(Buffer.byteLength(body)),
+					})
+					res.end(body)
+				})
+				await new Promise(r => server.listen(0, '127.0.0.1', r))
+				return server
+			}
+
+			const closeServer = server => new Promise(resolve => server.close(resolve))
+			const target = server => \`http://127.0.0.1:\${server.address().port}\`
+
+			const fallbackBackend = await makeBackend('fallback-wildcard')
+			const wildcardBackend = await makeBackend('preview-wildcard')
+			const exactBackend = await makeBackend('exact')
+
+			writeFileSync(configPath, [
+				\`*.local \${target(fallbackBackend)}\`,
+				\`*.preview.local \${target(wildcardBackend)}\`,
+				\`exact.preview.local \${target(exactBackend)}\`,
+				'',
+			].join('\\n'))
+			writeFileSync(runnerPath, "import 'qn:proxy/cli'\\n")
+
+			const child = spawn(qn, [runnerPath, '--config', configPath, '--port', '0', '--hostname', '127.0.0.1'], {
+				stdio: ['ignore', 'pipe', 'pipe'],
+			})
+			let closed = false
+			let killTimer = null
+			child.on('close', () => {
+				closed = true
+				if (killTimer) clearTimeout(killTimer)
+			})
+
+			const stopProxy = () => new Promise(resolve => {
+				if (closed) { resolve(); return }
+				child.once('close', resolve)
+				child.kill('SIGTERM')
+				killTimer = setTimeout(() => {
+					if (!closed) child.kill('SIGKILL')
+				}, 500)
+			})
+
+			let stderr = ''
+			child.stderr.on('data', d => stderr += d.toString())
+			const proxyPort = await new Promise((resolve, reject) => {
+				let settled = false
+				let stdout = ''
+				const done = (fn, value) => {
+					if (settled) return
+					settled = true
+					clearTimeout(timer)
+					fn(value)
+				}
+				const timer = setTimeout(() => done(reject, new Error('timed out waiting for proxy CLI: ' + stderr)), 5000)
+				child.stdout.on('data', d => {
+					stdout += d.toString()
+					const match = stdout.match(/listening on [^:]+:(\\d+)/)
+					if (match) done(resolve, Number(match[1]))
+				})
+				child.on('error', err => done(reject, err))
+				child.on('exit', (code, signal) => {
+					if (code !== 0 && !settled)
+						done(reject, new Error(\`proxy CLI exited before listening: code=\${code} signal=\${signal} stderr=\${stderr}\`))
+				})
+			})
+
+			const fetchHost = host => new Promise((resolve, reject) => {
+				const client = createConnection(proxyPort, '127.0.0.1')
+				let response = ''
+				client.on('connect', () => {
+					client.write(\`GET /test HTTP/1.1\\r\\nHost: \${host}\\r\\nConnection: close\\r\\n\\r\\n\`)
+				})
+				client.on('data', chunk => response += chunk)
+				client.on('end', () => {
+					const [head, body = ''] = response.split('\\r\\n\\r\\n')
+					const status = Number(head.match(/HTTP\\/1\\.1 (\\d+)/)?.[1] || 0)
+					resolve({
+						status,
+						body: body ? JSON.parse(body) : null,
+					})
+				})
+				client.on('error', reject)
+			})
+
+			try {
+				const preview = await fetchHost('app.session.preview.local')
+				const exact = await fetchHost('exact.preview.local')
+				const fallback = await fetchHost('other.local')
+				console.log(JSON.stringify({ preview, exact, fallback }))
+			} finally {
+				await stopProxy()
+				await closeServer(fallbackBackend)
+				await closeServer(wildcardBackend)
+				await closeServer(exactBackend)
+			}
+		`)
+		const output = await execAsync(bin, [`${dir}/test.js`])
+		const result = JSON.parse(output)
+		assert.strictEqual(result.preview.status, 200)
+		assert.strictEqual(result.preview.body.name, 'preview-wildcard')
+		assert.strictEqual(result.preview.body.host, 'app.session.preview.local')
+		assert.strictEqual(result.preview.body.xfh, 'app.session.preview.local')
+		assert.strictEqual(result.exact.status, 200)
+		assert.strictEqual(result.exact.body.name, 'exact')
+		assert.strictEqual(result.fallback.status, 200)
+		assert.strictEqual(result.fallback.body.name, 'fallback-wildcard')
 	})
 })

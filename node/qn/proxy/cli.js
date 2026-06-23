@@ -7,10 +7,12 @@
  * Config file format (one mapping per line):
  *   # comments start with #
  *   hostname backend_url
+ *   *.suffix backend_url
  *
  * Example config:
  *   app.local      http://localhost:3000
  *   api.local      http://localhost:4000
+ *   *.preview.local http://localhost:5000
  *
  * The config file is polled for changes every 2 seconds.
  *
@@ -45,23 +47,36 @@ function usage() {
 	console.error('Usage: qn proxy-cli.js [--config] <path> [--port <port>] [--hostname <addr>]')
 }
 
-let routes = new Map()
+let routes = { exact: new Map(), wildcards: [] }
 
 function loadConfig() {
 	try {
 		const content = readFileSync(configPath, 'utf8')
-		const newRoutes = new Map()
+		const exact = new Map()
+		const wildcards = new Map()
 		for (const line of content.split('\n')) {
 			const trimmed = line.trim()
 			if (!trimmed || trimmed.startsWith('#')) continue
 			const parts = trimmed.split(/\s+/)
 			if (parts.length >= 2) {
-				newRoutes.set(parts[0], parts[1])
+				const host = normalizeHost(parts[0])
+				if (host.startsWith('*.') && host.length > 2) {
+					const suffix = host.slice(1)
+					wildcards.set(suffix, { host, suffix, target: parts[1] })
+				} else {
+					exact.set(host, parts[1])
+				}
 			}
 		}
-		routes = newRoutes
-		const entries = [...routes.entries()].map(([h, b]) => `  ${h} -> ${b}`).join('\n')
-		console.log(`[proxy] loaded ${routes.size} route(s) from ${configPath}${entries ? '\n' + entries : ''}`)
+		routes = {
+			exact,
+			wildcards: [...wildcards.values()].sort((a, b) => b.suffix.length - a.suffix.length),
+		}
+		const entries = [
+			...routes.exact.entries(),
+			...routes.wildcards.map(({ host, target }) => [host, target]),
+		].map(([h, b]) => `  ${h} -> ${b}`).join('\n')
+		console.log(`[proxy] loaded ${entries.length} route(s) from ${configPath}${entries ? '\n' + entries : ''}`)
 	} catch (err) {
 		console.error(`[proxy] error reading config: ${err.message}`)
 	}
@@ -73,8 +88,8 @@ const proxy = await createProxy({
 	port,
 	hostname,
 	route: (req) => {
-		const host = (req.headers.host || '').split(':')[0]
-		return routes.get(host) || null
+		const host = hostFromHeader(req.headers.host || '')
+		return matchRoute(host)
 	},
 })
 
@@ -110,3 +125,25 @@ setInterval(() => {
 		console.error(`[proxy] error watching config: ${err.message}`)
 	}
 }, 2000)
+
+function matchRoute(host) {
+	const exact = routes.exact.get(host)
+	if (exact) return exact
+	const wildcard = routes.wildcards.find(({ suffix }) => host.length > suffix.length && host.endsWith(suffix))
+	return wildcard?.target || null
+}
+
+function hostFromHeader(value) {
+	const host = String(value).trim()
+	if (host.startsWith('[')) {
+		const end = host.indexOf(']')
+		return normalizeHost(end === -1 ? host : host.slice(1, end))
+	}
+	const firstColon = host.indexOf(':')
+	const lastColon = host.lastIndexOf(':')
+	return normalizeHost(firstColon !== -1 && firstColon === lastColon ? host.slice(0, lastColon) : host)
+}
+
+function normalizeHost(host) {
+	return host.toLowerCase().replace(/\.$/, '')
+}
