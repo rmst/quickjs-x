@@ -4,7 +4,8 @@
  * Traces static imports + literal dynamic imports from entry points,
  * transforms each file with Sucrase (typescript + jsx + imports),
  * concatenates reachable modules into a single file wrapped in a tiny
- * CJS-style runtime. Signature loosely mirrors `Bun.build()`.
+ * CJS-style runtime, and emits side-effect CSS imports as sibling assets.
+ * Signature loosely mirrors `Bun.build()`.
  *
  * Non-features: tree shaking, minification, source maps, code splitting,
  * top-level await (module wrappers are sync).
@@ -17,7 +18,9 @@ import { dirname, join, resolve, extname, basename, isAbsolute } from "node:path
 import { transform, parse } from "qn:sucrase"
 import { createTsconfigPathsResolver, nodeEnv } from "./tsconfig-paths.js"
 
-const PROBE_EXTS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"]
+const CODE_EXTS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"]
+const STYLE_EXTS = [".css"]
+const PROBE_EXTS = [...CODE_EXTS, ...STYLE_EXTS]
 const FORMATS = ["esm", "iife"]
 const TARGETS = ["browser", "node"]
 
@@ -59,6 +62,10 @@ function statOr(p) {
 function isFile(p) {
 	const st = statOr(p)
 	return st != null && st.isFile()
+}
+
+function isStyleFile(p) {
+	return STYLE_EXTS.includes(extname(p))
 }
 
 function readJson(p) {
@@ -218,13 +225,16 @@ function unquoteSpecifier(raw) {
 	return raw.slice(1, -1).replace(/\\(.)/g, (_, c) => c === "n" ? "\n" : c === "t" ? "\t" : c === "r" ? "\r" : c)
 }
 
-// Returns a list of { kind, start, end, specifier } entries. `start/end`
-// cover the range that should be replaced:
+// Returns a list of import entries. `start/end` cover the range that should
+// be replaced:
 //   - static: just the string-literal token (so the replacement becomes a
 //     new specifier string, which Sucrase's imports transform then turns
 //     into require(newSpec)).
 //   - dynamic: the whole `import(...)` expression (replaced with a call
 //     into our runtime).
+// Side-effect imports also include `statementStart/statementEnd`, which lets
+// asset imports be removed from the JS stream instead of becoming require()
+// calls.
 //
 // In files with no ESM import/export syntax, also collects literal
 // `require("X")` calls so hand-written CJS modules get the same id rewrite.
@@ -241,6 +251,15 @@ function extractImports(code, ext) {
 	const tokens = parse(code, isJSX, isTS, false).tokens
 	const out = []
 	let hasEsm = false
+	const sideEffectStatementEnd = (strIdx) => {
+		const strTok = tokens[strIdx]
+		const next = tokens[strIdx + 1]
+		if (!next || next.type === TT.eof) return strTok.end
+		if (next.type === TT.semi) return next.end
+		const gap = code.slice(strTok.end, next.start)
+		if (/[\r\n]/.test(gap)) return strTok.end
+		return null
+	}
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i]
 
@@ -251,6 +270,7 @@ function extractImports(code, ext) {
 			if (strTok?.type === TT.string && closeTok?.type === TT.parenR) {
 				out.push({
 					kind: "dynamic",
+					syntax: "dynamic",
 					start: t.start,
 					end: closeTok.end,
 					specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
@@ -264,10 +284,14 @@ function extractImports(code, ext) {
 		// Static side-effect: `import "X"`
 		if (t.type === TT._import && tokens[i + 1]?.type === TT.string) {
 			const strTok = tokens[i + 1]
+			const statementEnd = sideEffectStatementEnd(i + 1)
 			out.push({
 				kind: "static",
+				syntax: "side-effect",
 				start: strTok.start,
 				end: strTok.end,
+				statementStart: t.start,
+				statementEnd,
 				specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
 			})
 			i += 1
@@ -287,6 +311,7 @@ function extractImports(code, ext) {
 					if (strTok?.type === TT.string) {
 						out.push({
 							kind: "static",
+							syntax: t.type === TT._export ? "export-from" : "import-from",
 							start: strTok.start,
 							end: strTok.end,
 							specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
@@ -310,6 +335,7 @@ function extractImports(code, ext) {
 				const strTok = tokens[i + 2]
 				out.push({
 					kind: "static",
+					syntax: "require",
 					start: strTok.start,
 					end: strTok.end,
 					specifier: unquoteSpecifier(code.slice(strTok.start, strTok.end)),
@@ -514,6 +540,7 @@ function checkModuleSyntax(code, filePath) {
 function loadAndAnalyse(filePath) {
 	const source = readFileSync(filePath, "utf8")
 	const ext = extname(filePath)
+	if (isStyleFile(filePath)) return { kind: "css", source, ext, imports: [] }
 	if (ext === ".json") return { kind: "json", source, ext, imports: [] }
 	let imports
 	try {
@@ -556,9 +583,15 @@ function bundleEntry(entry, opts) {
 	const conditions = makeConditions(opts.target, opts.production)
 	const entryAbs = resolve(entry)
 	if (!isFile(entryAbs)) throw new Error(`entry point not found: ${entry}`)
+	if (isStyleFile(entryAbs)) {
+		throw new Error(`bundle: CSS entry points are not supported (${entry}); import CSS from a JavaScript or TypeScript entry point`)
+	}
 
 	const ids = new Map()
 	const modules = new Map()
+	const visiting = new Set()
+	const cssAssets = []
+	const seenCssAssets = new Set()
 	const declaredExternals = new Set(opts.external)
 	const aliasMap = new Map(Object.entries(opts.alias || {}))
 	const compiledDefines = compileDefines(opts.define)
@@ -572,9 +605,14 @@ function bundleEntry(entry, opts) {
 		return id
 	}
 
-	const stack = [entryAbs]
 	assignId(entryAbs)
 	let entryExports = null
+
+	const collectCssAsset = (filePath) => {
+		if (seenCssAssets.has(filePath)) return
+		seenCssAssets.add(filePath)
+		cssAssets.push({ filePath, text: readFileSync(filePath, "utf8") })
+	}
 
 	// Only used for the JSX-runtime import that Sucrase auto-injects during
 	// transform (it isn't part of the original source tokens we parsed).
@@ -584,11 +622,14 @@ function bundleEntry(entry, opts) {
 		return `${importSource}/${opts.production ? "jsx-runtime" : "jsx-dev-runtime"}`
 	}
 
-	while (stack.length) {
-		const filePath = stack.pop()
-		const id = ids.get(filePath)
-		if (modules.has(id)) continue
+	visit(entryAbs)
 
+	return { entrypoint: entryAbs, entryId: ids.get(entryAbs), modules, warnings, externals: usedExternals, entryExports, cssAssets }
+
+	function visit(filePath) {
+		const id = ids.get(filePath) || assignId(filePath)
+		if (modules.has(id) || visiting.has(filePath)) return
+		visiting.add(filePath)
 		const { kind, source, ext, imports } = loadAndAnalyse(filePath)
 		const fromDir = dirname(filePath)
 
@@ -598,6 +639,11 @@ function bundleEntry(entry, opts) {
 		for (const imp of imports) {
 			const dep = resolveDep(imp.specifier, filePath, fromDir)
 			if (dep === null) continue
+			if (dep.kind === "css") {
+				ranges.push(cssImportRemovalRange(imp, filePath))
+				collectCssAsset(dep.filePath)
+				continue
+			}
 			// External whose resolved spec equals the source spec: leave alone
 			// so Sucrase emits `require("<spec>")` which falls through to
 			// __qn_externals at runtime. Aliased externals fall through here
@@ -608,6 +654,7 @@ function bundleEntry(entry, opts) {
 				? JSON.stringify(newSpec)
 				: `Promise.resolve(require(${JSON.stringify(newSpec)}))`
 			ranges.push({ start: imp.start, end: imp.end, text })
+			if (dep.kind === "internal") visit(dep.filePath)
 		}
 		if (kind !== "json" && compiledDefines.length > 0) {
 			for (const m of extractDefineMatches(source, ext, compiledDefines)) ranges.push(m)
@@ -633,6 +680,8 @@ function bundleEntry(entry, opts) {
 			if (runtime && rewritten.includes(runtime)) {
 				const dep = resolveDep(runtime, filePath, fromDir)
 				if (dep !== null) {
+					if (dep.kind === "css") throw new Error(`bundle: JSX runtime "${runtime}" resolved to a CSS asset`)
+					if (dep.kind === "internal") visit(dep.filePath)
 					const target = dep.kind === "internal" ? dep.id : dep.spec
 					if (target !== runtime) {
 						const pat = new RegExp(`require\\((['"])${runtime.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\1\\)`, "g")
@@ -654,15 +703,15 @@ function bundleEntry(entry, opts) {
 			checkUnsupportedStarExport(source, ext, filePath)
 			entryExports = collectEntryExportNames(rewritten)
 		}
+		visiting.delete(filePath)
 	}
 
-	return { entryId: ids.get(entryAbs), modules, warnings, externals: usedExternals, entryExports }
-
 	// Returns null for unresolved specs, {kind: "internal", id} for bundled
-	// modules, or {kind: "external", spec} for externals. The spec returned for
-	// externals is post-alias, which lets the caller distinguish aliased
-	// externals (where the source spec must be rewritten) from plain externals
-	// (where the source can be left alone).
+	// modules, {kind: "css", filePath} for stylesheet assets, or
+	// {kind: "external", spec} for externals. The spec returned for externals
+	// is post-alias, which lets the caller distinguish aliased externals
+	// (where the source spec must be rewritten) from plain externals (where
+	// the source can be left alone).
 	function resolveDep(spec, filePath, fromDir) {
 		if (aliasMap.has(spec)) spec = aliasMap.get(spec)
 		if (declaredExternals.has(spec)) {
@@ -680,12 +729,26 @@ function bundleEntry(entry, opts) {
 		}
 		const resolved = resolveSpecifier(spec, fromDir, conditions)
 		if (!resolved) {
+			if (isStyleFile(spec)) throw new Error(`bundle: CSS import "${spec}" from ${filePath} could not be resolved`)
 			warnings.push(`unresolved import "${spec}" from ${filePath}`)
 			return null
 		}
+		if (isStyleFile(resolved)) return { kind: "css", filePath: resolved }
 		const depId = assignId(resolved)
-		if (!modules.has(depId)) stack.push(resolved)
-		return { kind: "internal", id: depId }
+		return { kind: "internal", id: depId, filePath: resolved }
+	}
+
+	function cssImportRemovalRange(imp, filePath) {
+		if (imp.syntax === "dynamic") {
+			throw new Error(`bundle: dynamic CSS import "${imp.specifier}" from ${filePath} is not supported`)
+		}
+		if (imp.syntax !== "side-effect") {
+			throw new Error(`bundle: CSS import "${imp.specifier}" from ${filePath} must be a side-effect import`)
+		}
+		if (imp.statementEnd == null) {
+			throw new Error(`bundle: CSS import attributes are not supported in ${filePath}`)
+		}
+		return { start: imp.statementStart, end: imp.statementEnd, text: "" }
 	}
 }
 
@@ -743,6 +806,10 @@ function emitBundle({ entryId, modules, externals, format, entryExports }) {
 		chunks.push(`\n__qn_require(${JSON.stringify(entryId)});\n`)
 	}
 	return chunks.join("")
+}
+
+function emitCssBundle(cssAssets) {
+	return cssAssets.map(({ text }) => text.endsWith("\n") ? text : text + "\n").join("")
 }
 
 /* ------------------------------------------------------------------ *
@@ -819,28 +886,41 @@ export async function build(options) {
 	const outputs = []
 	const logs = []
 	const writtenPaths = new Map()
+	const reserveOutputPath = (outPath, entry) => {
+		const prior = writtenPaths.get(outPath)
+		if (prior) {
+			throw new Error(
+				`two entry points map to the same output "${outPath}": ${prior} and ${entry}. ` +
+				`Rename one of the entry points.`)
+		}
+		writtenPaths.set(outPath, entry)
+	}
 
 	for (const entry of entrypoints) {
-		const { entryId, modules, warnings, externals: usedExternals, entryExports } = bundleEntry(entry, opts)
+		const { entrypoint, entryId, modules, warnings, externals: usedExternals, entryExports, cssAssets } = bundleEntry(entry, opts)
 		for (const message of warnings) logs.push({ level: "warning", message })
 		let body = emitBundle({ entryId, modules, externals: usedExternals, format, entryExports })
 		if (format === "iife") body = `(function(){\n${body}\n})();\n`
 
 		let outPath = null
+		const outStem = basename(entry).replace(/\.(tsx?|jsx?|mjs|cjs)$/, "")
 		if (outdir) {
-			const name = basename(entry).replace(/\.(tsx?|jsx?|mjs|cjs)$/, "") + ".js"
-			outPath = join(outdir, name)
-			const prior = writtenPaths.get(outPath)
-			if (prior) {
-				throw new Error(
-					`two entry points map to the same output "${outPath}": ${prior} and ${entry}. ` +
-					`Rename one of the entry points.`)
-			}
-			writtenPaths.set(outPath, entry)
+			outPath = join(outdir, outStem + ".js")
+			reserveOutputPath(outPath, entry)
 			mkdirSync(outdir, { recursive: true })
 			writeFileSync(outPath, body)
 		}
-		outputs.push({ path: outPath, text: body, kind: "entry-point" })
+		outputs.push({ path: outPath, text: body, kind: "entry-point", entrypoint })
+		if (cssAssets.length > 0) {
+			const cssBody = emitCssBundle(cssAssets)
+			let cssPath = null
+			if (outdir) {
+				cssPath = join(outdir, outStem + ".css")
+				reserveOutputPath(cssPath, entry)
+				writeFileSync(cssPath, cssBody)
+			}
+			outputs.push({ path: cssPath, text: cssBody, kind: "css", entrypoint })
+		}
 	}
 
 	return { success: true, outputs, logs }
@@ -853,6 +933,7 @@ export async function build(options) {
 const HELP = `Usage: qn build <entrypoint...> [options]
 
 Bundle JavaScript/TypeScript entry points into single-file outputs.
+Side-effect CSS imports are emitted as sibling .css files for browser use.
 
 Options:
   --outdir DIR              Output directory (default: ./dist)

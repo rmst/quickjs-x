@@ -63,14 +63,14 @@ qx script.js  # zx-compatible shell scripting with $ function
 qn build src/main.tsx --outdir=dist --jsx-import-source=preact
 ```
 
-Walks static imports from an entry point, transforms TS/JSX via Sucrase, resolves `node_modules` with `package.json` exports, and emits a single self-contained JS file. No tree shaking or minification. Roughly Bun.build-compatible for simple cases.
+Walks static imports from an entry point, transforms TS/JSX via Sucrase, resolves `node_modules` with `package.json` exports, and emits a single self-contained JS file. Side-effect CSS imports such as `import "./component.css"` are discovered through the same graph and emitted as a sibling stylesheet, e.g. `dist/main.css`; include it with a normal `<link rel="stylesheet" href="./main.css">`. No tree shaking or minification. Roughly Bun.build-compatible for simple cases.
 
 **Watch mode** (re-run on file change)
 ```bash
 qn --watch script.js
 ```
 
-Runs the script, then restarts it whenever any file in its import graph changes. The graph is traced statically via `qn:bundle`'s `traceModuleGraph`, so `.js`, `.ts`, `.json`, and literal-dynamic `import()` are all tracked. Computed dynamic imports aren't.
+Runs the script, then restarts it whenever any file in its import graph changes. The graph is traced statically via `qn:bundle`'s `traceModuleGraph`, so `.js`, `.ts`, `.json`, `.css`, and literal-dynamic `import()` are all tracked. Computed dynamic imports aren't.
 
 
 ### Building Standalone Applications

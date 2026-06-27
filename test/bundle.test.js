@@ -15,11 +15,13 @@ describe('qn bundle', () => {
 	test('bundles a single entry with a relative import', async () => {
 		const dir = mktempdir()
 		try {
-			writeFileSync(join(dir, 'main.js'), 'import { greet } from "./greet.js"\nconsole.log(greet("world"))\n')
+			const entry = join(dir, 'main.js')
+			writeFileSync(entry, 'import { greet } from "./greet.js"\nconsole.log(greet("world"))\n')
 			writeFileSync(join(dir, 'greet.js'), 'export const greet = (n) => `hi ${n}`\n')
-			const out = await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			const out = await build({ entrypoints: [entry], outdir: join(dir, 'dist') })
 			assert.strictEqual(out.success, true)
 			assert.strictEqual(out.outputs.length, 1)
+			assert.strictEqual(out.outputs[0].entrypoint, entry)
 			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'hi world')
 		} finally {
 			rmSync(dir, { recursive: true })
@@ -229,6 +231,131 @@ describe('qn bundle', () => {
 			execFileSync(QN(), ['build', 'main.js', '--outdir=dist'], { cwd: dir, encoding: 'utf8' })
 			const result = execFileSync(QN(), [join(dir, 'dist/main.js')], { encoding: 'utf8' }).trim()
 			assert.strictEqual(result, 'via cli')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('emits side-effect CSS imports as sibling build outputs', async () => {
+		const dir = mktempdir()
+		try {
+			const entry = join(dir, 'main.js')
+			writeFileSync(entry,
+				'import "./reset.css"\n' +
+				'import { render } from "./component.js"\n' +
+				'import "./theme.css"\n' +
+				'console.log(render())\n')
+			writeFileSync(join(dir, 'component.js'),
+				'import "./component.css"\n' +
+				'import "./reset.css"\n' +
+				'export const render = () => "styled"\n')
+			writeFileSync(join(dir, 'reset.css'), 'html { box-sizing: border-box; }\n')
+			writeFileSync(join(dir, 'component.css'), '.component { color: red; }')
+			writeFileSync(join(dir, 'theme.css'), ':root { color-scheme: light; }\n')
+
+			const result = await build({ entrypoints: [entry], outdir: join(dir, 'dist') })
+			const cssText =
+				'html { box-sizing: border-box; }\n' +
+				'.component { color: red; }\n' +
+				':root { color-scheme: light; }\n'
+			assert.deepStrictEqual(result.outputs.map(out => [out.kind, out.path, out.entrypoint]), [
+				['entry-point', join(dir, 'dist/main.js'), entry],
+				['css', join(dir, 'dist/main.css'), entry],
+			])
+			assert.strictEqual(result.outputs.find(out => out.kind === 'css').text, cssText)
+			assert.strictEqual(readFileSync(join(dir, 'dist/main.css'), 'utf8'), cssText)
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'styled')
+			const bundle = readFileSync(join(dir, 'dist/main.js'), 'utf8')
+			assert.doesNotMatch(bundle, /reset\.css|component\.css|theme\.css/)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('resolves CSS imports through package exports', async () => {
+		const dir = mktempdir()
+		try {
+			const pkgDir = join(dir, 'node_modules', 'theme-pkg')
+			mkdirSync(join(pkgDir, 'styles'), { recursive: true })
+			writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+				name: 'theme-pkg',
+				exports: { './theme.css': './styles/theme.css' },
+			}))
+			writeFileSync(join(pkgDir, 'styles/theme.css'), '.pkg { color: green; }\n')
+			writeFileSync(join(dir, 'main.js'), 'import "theme-pkg/theme.css"\nconsole.log("pkg-css")\n')
+
+			const result = await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			assert.strictEqual(result.outputs.find(out => out.kind === 'css').text, '.pkg { color: green; }\n')
+			assert.strictEqual(runBundle(join(dir, 'dist/main.js')), 'pkg-css')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('sets entrypoint on every output in multi-entry builds', async () => {
+		const dir = mktempdir()
+		try {
+			const appEntry = join(dir, 'app.js')
+			const adminEntry = join(dir, 'admin.js')
+			writeFileSync(appEntry, 'import "./app.css"\nconsole.log("app")\n')
+			writeFileSync(adminEntry, 'import "./admin.css"\nconsole.log("admin")\n')
+			writeFileSync(join(dir, 'app.css'), '.app {}\n')
+			writeFileSync(join(dir, 'admin.css'), '.admin {}\n')
+
+			const result = await build({ entrypoints: [appEntry, adminEntry], outdir: join(dir, 'dist') })
+			const byPath = new Map(result.outputs.map(out => [out.path, out]))
+			assert.strictEqual(byPath.get(join(dir, 'dist/app.js')).entrypoint, appEntry)
+			assert.strictEqual(byPath.get(join(dir, 'dist/app.css')).entrypoint, appEntry)
+			assert.strictEqual(byPath.get(join(dir, 'dist/admin.js')).entrypoint, adminEntry)
+			assert.strictEqual(byPath.get(join(dir, 'dist/admin.css')).entrypoint, adminEntry)
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('CLI: qn build emits CSS output paths', () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'main.js'), 'import "./style.css"\nconsole.log("via cli css")\n')
+			writeFileSync(join(dir, 'style.css'), '.cli { display: block; }\n')
+			const out = execFileSync(QN(), ['build', 'main.js', '--outdir=dist'], { cwd: dir, encoding: 'utf8' })
+			assert.deepStrictEqual(out.trim().split(/\r?\n/), [join(dir, 'dist/main.js'), join(dir, 'dist/main.css')])
+			assert.strictEqual(readFileSync(join(dir, 'dist/main.css'), 'utf8'), '.cli { display: block; }\n')
+			const result = execFileSync(QN(), [join(dir, 'dist/main.js')], { encoding: 'utf8' }).trim()
+			assert.strictEqual(result, 'via cli css')
+		} finally {
+			rmSync(dir, { recursive: true })
+		}
+	})
+
+	test('rejects CSS imports that need runtime JS semantics', async () => {
+		const dir = mktempdir()
+		try {
+			writeFileSync(join(dir, 'style.css'), '.x {}\n')
+
+			writeFileSync(join(dir, 'main.js'), 'import styles from "./style.css"\nconsole.log(styles)\n')
+			let err
+			try {
+				await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			} catch (e) { err = e }
+			assert.ok(err, 'expected value CSS import to throw')
+			assert.match(err.message, /side-effect import/)
+
+			writeFileSync(join(dir, 'main.js'), 'import("./style.css").then(() => console.log("loaded"))\n')
+			err = null
+			try {
+				await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			} catch (e) { err = e }
+			assert.ok(err, 'expected dynamic CSS import to throw')
+			assert.match(err.message, /dynamic CSS import/)
+
+			writeFileSync(join(dir, 'main.js'), 'import "./missing.css"\n')
+			err = null
+			try {
+				await build({ entrypoints: [join(dir, 'main.js')], outdir: join(dir, 'dist') })
+			} catch (e) { err = e }
+			assert.ok(err, 'expected missing CSS import to throw')
+			assert.match(err.message, /could not be resolved/)
 		} finally {
 			rmSync(dir, { recursive: true })
 		}
@@ -785,6 +912,13 @@ describe('traceModuleGraph', () => {
 		writeFileSync(join(dir, 'data.ts'), 'export const v: number = 1\n')
 		const g = traceModuleGraph(join(dir, 'main.js'))
 		assert.ok(g.has(join(dir, 'data.ts')))
+	}))
+
+	test('tracks .css imports without parsing them as JavaScript', withTemp(async (dir) => {
+		writeFileSync(join(dir, 'main.js'), 'import "./style.css"\nconsole.log(1)\n')
+		writeFileSync(join(dir, 'style.css'), 'body { color: red; }\n')
+		const g = traceModuleGraph(join(dir, 'main.js'))
+		assert.ok(g.has(join(dir, 'style.css')))
 	}))
 
 	test('silently skips unresolvable bare specifiers', withTemp(async (dir) => {
