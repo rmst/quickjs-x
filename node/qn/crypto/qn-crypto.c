@@ -30,6 +30,7 @@ typedef struct {
 	unsigned char *data;
 	size_t len;
 	size_t cap;
+	int failed;
 } byte_vec_t;
 
 static void bv_init(byte_vec_t *v)
@@ -37,30 +38,68 @@ static void bv_init(byte_vec_t *v)
 	v->data = NULL;
 	v->len = 0;
 	v->cap = 0;
+	v->failed = 0;
 }
 
-static void bv_append(void *ctx, const void *buf, size_t len)
+static int bv_append_checked(byte_vec_t *v, const void *buf, size_t len)
 {
-	byte_vec_t *v = ctx;
-	if (v->len + len > v->cap) {
+	if (v->failed)
+		return 0;
+	if (len == 0)
+		return 1;
+	if (len > (size_t)-1 - v->len) {
+		v->failed = 1;
+		return 0;
+	}
+	size_t needed = v->len + len;
+	if (needed > v->cap) {
 		size_t new_cap = v->cap ? v->cap * 2 : 256;
-		while (new_cap < v->len + len) new_cap *= 2;
+		if (new_cap < v->cap)
+			new_cap = needed;
+		while (new_cap < needed) {
+			if (new_cap > (size_t)-1 / 2) {
+				new_cap = needed;
+				break;
+			}
+			new_cap *= 2;
+		}
 		unsigned char *p = realloc(v->data, new_cap);
-		if (!p) return;
+		if (!p) {
+			v->failed = 1;
+			return 0;
+		}
 		v->data = p;
 		v->cap = new_cap;
 	}
 	memcpy(v->data + v->len, buf, len);
 	v->len += len;
+	return 1;
+}
+
+static void bv_append(void *ctx, const void *buf, size_t len)
+{
+	(void)bv_append_checked(ctx, buf, len);
+}
+
+static int bv_failed(const byte_vec_t *v)
+{
+	return v->failed;
 }
 
 static unsigned char *bv_take(byte_vec_t *v, size_t *out_len)
 {
+	if (v->failed) {
+		free(v->data);
+		*out_len = 0;
+		bv_init(v);
+		return NULL;
+	}
 	unsigned char *d = v->data;
 	*out_len = v->len;
 	v->data = NULL;
 	v->len = 0;
 	v->cap = 0;
+	v->failed = 0;
 	return d;
 }
 
@@ -70,6 +109,7 @@ static void bv_clear(byte_vec_t *v)
 	v->data = NULL;
 	v->len = 0;
 	v->cap = 0;
+	v->failed = 0;
 }
 
 /* Duplicate a blob */
@@ -207,7 +247,11 @@ static int load_ca_pem(trust_anchor_store_t *store, const char *path)
 				}
 			} else if (event == BR_PEM_END_OBJ && in_cert) {
 				int err = br_x509_decoder_last_error(&cc.x509);
-				if (err == 0) {
+				if (bv_failed(&cc.dn)) {
+					bv_clear(&cc.dn);
+					fclose(f);
+					return -1;
+				} else if (err == 0) {
 					size_t dn_len;
 					unsigned char *dn_data = bv_take(&cc.dn, &dn_len);
 					add_trust_anchor(store, &cc.x509,
@@ -217,12 +261,25 @@ static int load_ca_pem(trust_anchor_store_t *store, const char *path)
 				}
 				in_cert = 0;
 			} else if (event == BR_PEM_ERROR) {
+				int failed = in_cert && bv_failed(&cc.dn);
 				if (in_cert) bv_clear(&cc.dn);
+				if (failed) {
+					fclose(f);
+					return -1;
+				}
 				break;
 			}
 		}
 	}
 
+	if (in_cert) {
+		int failed = bv_failed(&cc.dn);
+		bv_clear(&cc.dn);
+		if (failed) {
+			fclose(f);
+			return -1;
+		}
+	}
 	fclose(f);
 	return (int)(store->num_anchors - initial_count);
 }
@@ -420,6 +477,10 @@ static int load_private_key_pem_data(const unsigned char *data, size_t len,
 				br_pem_decoder_setdest(&pem, NULL, NULL);
 			}
 		} else if (event == BR_PEM_END_OBJ && in_key) {
+			if (bv_failed(&current)) {
+				bv_clear(&current);
+				return -1;
+			}
 			size_t der_len;
 			unsigned char *der = bv_take(&current, &der_len);
 			if (!der) return -1;
@@ -1541,7 +1602,11 @@ static JSValue js_cipherUpdate(JSContext *ctx, JSValueConst this_val,
 		return ab;
 	} else if (cc->type == CIPHER_CHACHA20_POLY1305) {
 		/* Accumulate data; process in cipherFinal */
-		bv_append(&cc->u.chapoly.data, data, len);
+		if (!bv_append_checked(&cc->u.chapoly.data, data, len)) {
+			if (is_string) JS_FreeCString(ctx, (const char *)data);
+			JS_FreeValue(ctx, tmp);
+			return JS_ThrowOutOfMemory(ctx);
+		}
 		if (is_string) JS_FreeCString(ctx, (const char *)data);
 		JS_FreeValue(ctx, tmp);
 		return JS_UNDEFINED; /* data returned from cipherFinal */
@@ -1565,7 +1630,11 @@ static JSValue js_cipherSetAAD(JSContext *ctx, JSValueConst this_val,
 	if (cc->type == CIPHER_AES_GCM) {
 		br_gcm_aad_inject(&cc->u.aes_gcm.gcm, data, len);
 	} else if (cc->type == CIPHER_CHACHA20_POLY1305) {
-		bv_append(&cc->u.chapoly.aad, data, len);
+		if (!bv_append_checked(&cc->u.chapoly.aad, data, len)) {
+			if (is_string) JS_FreeCString(ctx, (const char *)data);
+			JS_FreeValue(ctx, tmp);
+			return JS_ThrowOutOfMemory(ctx);
+		}
 	}
 
 	if (is_string) JS_FreeCString(ctx, (const char *)data);
@@ -1588,6 +1657,8 @@ static JSValue js_cipherFinal(JSContext *ctx, JSValueConst this_val,
 		cc->u.aes_gcm.has_tag = 1;
 		return JS_NewArrayBufferCopy(ctx, NULL, 0);
 	} else if (cc->type == CIPHER_CHACHA20_POLY1305) {
+		if (bv_failed(&cc->u.chapoly.data) || bv_failed(&cc->u.chapoly.aad))
+			return JS_ThrowOutOfMemory(ctx);
 		size_t dlen = cc->u.chapoly.data.len;
 		uint8_t *out = js_malloc(ctx, dlen > 0 ? dlen : 1);
 		if (!out) return JS_EXCEPTION;
@@ -1605,7 +1676,10 @@ static JSValue js_cipherFinal(JSContext *ctx, JSValueConst this_val,
 		/* Reuse chapoly.aad to store the tag */
 		bv_clear(&cc->u.chapoly.aad);
 		bv_clear(&cc->u.chapoly.data);
-		bv_append(&cc->u.chapoly.aad, tag, 16);
+		if (!bv_append_checked(&cc->u.chapoly.aad, tag, 16)) {
+			js_free(ctx, out);
+			return JS_ThrowOutOfMemory(ctx);
+		}
 
 		JSValue ab = JS_NewArrayBuffer(ctx, out, dlen,
 			(void (*)(JSRuntime *, void *, void *))js_free_rt, NULL, 0);
@@ -1628,6 +1702,8 @@ static JSValue js_cipherGetAuthTag(JSContext *ctx, JSValueConst this_val,
 		}
 		return JS_NewArrayBufferCopy(ctx, cc->u.aes_gcm.tag, 16);
 	} else if (cc->type == CIPHER_CHACHA20_POLY1305) {
+		if (bv_failed(&cc->u.chapoly.aad))
+			return JS_ThrowOutOfMemory(ctx);
 		if (cc->u.chapoly.aad.len == 16)
 			return JS_NewArrayBufferCopy(ctx, cc->u.chapoly.aad.data, 16);
 	}
@@ -1655,13 +1731,19 @@ static JSValue js_cipherSetAuthTag(JSContext *ctx, JSValueConst this_val,
 		} else {
 			ok = br_gcm_check_tag(&cc->u.aes_gcm.gcm, tag);
 		}
-	} else if (cc->type == CIPHER_CHACHA20_POLY1305 && len == 16 &&
-	           cc->u.chapoly.aad.len == 16) {
-		/* Constant-time compare */
-		uint32_t diff = 0;
-		for (size_t i = 0; i < 16; i++)
-			diff |= cc->u.chapoly.aad.data[i] ^ tag[i];
-		ok = (diff == 0);
+	} else if (cc->type == CIPHER_CHACHA20_POLY1305) {
+		if (bv_failed(&cc->u.chapoly.aad)) {
+			if (is_string) JS_FreeCString(ctx, (const char *)tag);
+			JS_FreeValue(ctx, tmp);
+			return JS_ThrowOutOfMemory(ctx);
+		}
+		if (len == 16 && cc->u.chapoly.aad.len == 16) {
+			/* Constant-time compare */
+			uint32_t diff = 0;
+			for (size_t i = 0; i < 16; i++)
+				diff |= cc->u.chapoly.aad.data[i] ^ tag[i];
+			ok = (diff == 0);
+		}
 	}
 
 	if (is_string) JS_FreeCString(ctx, (const char *)tag);

@@ -492,12 +492,13 @@ describe('fetch body cleanup', () => {
 					await res.text()
 				}
 				// With connection pooling, all requests should reuse 1 connection
-				console.log(connCount <= 2 ? 'ok' : 'connections:' + connCount)
+				console.log(JSON.stringify({ connCount }))
+				server.closeAllConnections()
 				server.close()
 			})
 		`)
 		const output = await execAsync(bin, [`${dir}/test.js`])
-		assert.strictEqual(output, 'ok')
+		assert.deepStrictEqual(JSON.parse(output), { connCount: 1 })
 	})
 
 	testQnOnly('unconsumed responses do not leak sockets', async ({ bin, dir }) => {

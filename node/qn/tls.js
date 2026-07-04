@@ -117,15 +117,26 @@ export function accept(cred) {
 export function streamTransport(handle) {
 	let pendingResolve = null
 	let pendingReject = null
+	let pendingSignal = null
+	let pendingAbort = null
 	let buffered = null
 	let eof = false
+
+	const clearPendingRead = () => {
+		if (pendingSignal && pendingAbort)
+			pendingSignal.removeEventListener('abort', pendingAbort)
+		pendingResolve = null
+		pendingReject = null
+		pendingSignal = null
+		pendingAbort = null
+	}
 
 	setOnRead(handle, (buf, err) => {
 		if (err) {
 			readStop(handle)
 			if (pendingReject) {
 				const rej = pendingReject
-				pendingResolve = pendingReject = null
+				clearPendingRead()
 				rej(new Error('TLS: stream read error'))
 			}
 			return
@@ -135,7 +146,7 @@ export function streamTransport(handle) {
 			readStop(handle)
 			if (pendingResolve) {
 				const res = pendingResolve
-				pendingResolve = pendingReject = null
+				clearPendingRead()
 				res(null)
 			}
 			return
@@ -145,7 +156,7 @@ export function streamTransport(handle) {
 		const chunk = new Uint8Array(buf)
 		if (pendingResolve) {
 			const res = pendingResolve
-			pendingResolve = pendingReject = null
+			clearPendingRead()
 			res(chunk)
 		} else {
 			buffered = chunk
@@ -165,13 +176,21 @@ export function streamTransport(handle) {
 				pendingResolve = resolve
 				pendingReject = reject
 				if (signal) {
-					signal.addEventListener('abort', () => {
+					pendingSignal = signal
+					pendingAbort = () => {
 						readStop(handle)
-						pendingResolve = pendingReject = null
-						reject(signal.reason)
-					}, { once: true })
+						const rej = pendingReject
+						clearPendingRead()
+						if (rej) rej(signal.reason)
+					}
+					signal.addEventListener('abort', pendingAbort, { once: true })
 				}
-				readStart(handle)
+				try {
+					readStart(handle)
+				} catch (err) {
+					clearPendingRead()
+					reject(err)
+				}
 			})
 		},
 		write(data, { signal } = {}) {

@@ -525,7 +525,7 @@ export class ClientRequest extends EventEmitter {
 			this.#port,
 			Array.from(this.#headers.values()).map(({ key, value }) => [key, value]),
 			this.#isDefaultPort(this.#port),
-			this.#headers.get('host')?.value,
+			{ hostHeader: this.#headers.get('host')?.value },
 		)
 		this.#headerSent = true
 		const ret = this.#writeRaw(req)
@@ -665,6 +665,7 @@ export class HTTPServer extends EventEmitter {
 			this.#sockets.add(socket)
 			socket.on('close', () => this.#sockets.delete(socket))
 			socket.on('error', () => {})
+			this.emit('connection', socket)
 			this.#handleConnection(socket)
 		})
 	}

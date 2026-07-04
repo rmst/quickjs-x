@@ -546,10 +546,9 @@ describe('qn:http serve()', () => {
 	})
 
 	// Regression: a user-supplied Connection header used to be appended to the
-	// hardcoded "Connection: close" from buildRequest, producing duplicate
-	// headers on the wire ("Connection: close" twice). Receivers that
-	// concatenate duplicates into "close, close" then failed strict-equality
-	// keep-alive detection. buildRequest now drops user-supplied Connection.
+	// transport-owned Connection header from buildRequest, producing duplicate
+	// headers on the wire. Fetch now drops user-supplied Connection and relies
+	// on HTTP/1.1 keep-alive defaults, so it should emit none.
 	testQnOnly('fetch drops user-supplied Connection header (no duplicate on wire)', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
 			import * as net from 'node:net'
@@ -580,7 +579,7 @@ describe('qn:http serve()', () => {
 		`)
 		const output = $({ timeout: 5000 })`${bin} ${dir}/test.js`
 		const result = JSON.parse(output.trim())
-		assert.strictEqual(result.connHeaderCount, 1, `Expected exactly one Connection header, got: ${JSON.stringify(result.headers)}`)
+		assert.strictEqual(result.connHeaderCount, 0, `Expected no Connection header, got: ${JSON.stringify(result.headers)}`)
 	})
 
 	// Regression: Connection is a comma-separated list (RFC 7230 §6.1).

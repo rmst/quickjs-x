@@ -7,6 +7,7 @@ import {
 	tcpNew, tcpConnect as _tcpConnect, tcpNodelay,
 	readStart, readStop, write as _streamWrite,
 	close as _streamClose, setOnRead, setOnConnect,
+	ref as _streamRef, unref as _streamUnref,
 	AF_INET, AF_INET6,
 } from 'qn/uv-stream'
 import { getaddrinfo as _getaddrinfo } from 'qn_uv_dns'
@@ -285,6 +286,7 @@ function poolGet(key) {
 		const entry = entries.pop()
 		clearTimeout(entry.timer)
 		if (entries.length === 0) _pool.delete(key)
+		entry.conn.ref()
 		return entry.conn
 	}
 	_pool.delete(key)
@@ -301,6 +303,7 @@ function poolPut(key, conn) {
 		conn.destroy()
 		return
 	}
+	conn.unref()
 	const timer = setTimeout(() => {
 		const idx = entries.findIndex(e => e.conn === conn)
 		if (idx !== -1) entries.splice(idx, 1)
@@ -363,15 +366,26 @@ async function tcpConnect(host, port, signal) {
 function plainTransport(handle) {
 	let pendingResolve = null
 	let pendingReject = null
+	let pendingSignal = null
+	let pendingAbort = null
 	let buffered = null
 	let eof = false
+
+	const clearPendingRead = () => {
+		if (pendingSignal && pendingAbort)
+			pendingSignal.removeEventListener('abort', pendingAbort)
+		pendingResolve = null
+		pendingReject = null
+		pendingSignal = null
+		pendingAbort = null
+	}
 
 	setOnRead(handle, (buf, err) => {
 		if (err) {
 			readStop(handle)
 			if (pendingReject) {
 				const rej = pendingReject
-				pendingResolve = pendingReject = null
+				clearPendingRead()
 				rej(new Error('fetch: stream read error'))
 			}
 			return
@@ -381,7 +395,7 @@ function plainTransport(handle) {
 			readStop(handle)
 			if (pendingResolve) {
 				const res = pendingResolve
-				pendingResolve = pendingReject = null
+				clearPendingRead()
 				res(null)
 			}
 			return
@@ -390,7 +404,7 @@ function plainTransport(handle) {
 		const chunk = new Uint8Array(buf)
 		if (pendingResolve) {
 			const res = pendingResolve
-			pendingResolve = pendingReject = null
+			clearPendingRead()
 			res(chunk)
 		} else {
 			buffered = chunk
@@ -410,13 +424,21 @@ function plainTransport(handle) {
 				pendingResolve = resolve
 				pendingReject = reject
 				if (signal) {
-					signal.addEventListener('abort', () => {
+					pendingSignal = signal
+					pendingAbort = () => {
 						readStop(handle)
-						pendingResolve = pendingReject = null
-						reject(signal.reason)
-					}, { once: true })
+						const rej = pendingReject
+						clearPendingRead()
+						if (rej) rej(signal.reason)
+					}
+					signal.addEventListener('abort', pendingAbort, { once: true })
 				}
-				readStart(handle)
+				try {
+					readStart(handle)
+				} catch (err) {
+					clearPendingRead()
+					reject(err)
+				}
 			})
 		},
 		async write(data, { signal } = {}) {
@@ -427,7 +449,9 @@ function plainTransport(handle) {
 }
 
 function buildRequest(method, path, host, port, headers, isDefaultPort) {
-	return _buildRequest(method, path, host, port, headers, isDefaultPort)
+	return _buildRequest(method, path, host, port, headers, isDefaultPort, {
+		connection: null,
+	})
 }
 
 /**
@@ -507,6 +531,12 @@ async function createConnection(handle, host, isHttps, signal, pin) {
 				try { tls.close(tlsConn, transport) } catch {}
 			}
 			try { _streamClose(handle) } catch {}
+		},
+		ref() {
+			if (!destroyed) try { _streamRef(handle) } catch {}
+		},
+		unref() {
+			if (!destroyed) try { _streamUnref(handle) } catch {}
 		},
 	}
 }

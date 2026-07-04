@@ -335,16 +335,18 @@ describe('node:fs shim', () => {
 
 	test('rmSync with force: true should throw on permission error', ({ bin, dir }) => {
 		writeFileSync(`${dir}/test.js`, `
-			import { rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+			import { rmSync, mkdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 			import { execSync } from 'node:child_process'
 			import process from 'node:process'
 
 			const parentDir = '${dir}/protected'
 			const filePath = parentDir + '/file.txt'
+			const probePath = parentDir + '/probe.txt'
 
 			// Create directory structure
 			mkdirSync(parentDir)
 			writeFileSync(filePath, 'content')
+			writeFileSync(probePath, 'probe')
 
 			// Make parent directory read-only (prevents file deletion)
 			execSync('chmod 555 ' + parentDir)
@@ -352,11 +354,20 @@ describe('node:fs shim', () => {
 			// Check if we're running as root (permissions don't apply)
 			const isRoot = process.getuid?.() === 0
 
-			let threw = false
+			let permissionFixtureWorks = false
 			try {
-				rmSync(filePath, { force: true })
-			} catch (e) {
-				threw = true
+				unlinkSync(probePath)
+			} catch {
+				permissionFixtureWorks = true
+			}
+
+			let threw = false
+			if (permissionFixtureWorks) {
+				try {
+					rmSync(filePath, { force: true })
+				} catch (e) {
+					threw = true
+				}
 			}
 
 			// Restore permissions for cleanup
@@ -365,14 +376,14 @@ describe('node:fs shim', () => {
 			// Check if file still exists
 			const fileStillExists = existsSync(filePath)
 
-			console.log(JSON.stringify({ threw, fileStillExists, isRoot }))
+			console.log(JSON.stringify({ threw, fileStillExists, isRoot, permissionFixtureWorks }))
 		`)
 
 		const output = $`${bin} ${dir}/test.js`
 		const result = JSON.parse(output)
 
-		// Skip assertion if running as root (permissions don't apply)
-		if (result.isRoot) {
+		// Skip assertion if this environment allows deletion despite the mode.
+		if (result.isRoot || !result.permissionFixtureWorks) {
 			return
 		}
 
