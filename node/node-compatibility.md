@@ -231,6 +231,16 @@ Notes: `utf8` is the only supported text encoding (no latin1, hex, base64, etc.)
 | `http.request` / `http.get` (client) | ✅ | HTTP/1.1 over TCP and Unix sockets; no Agent pooling |
 | `http.Agent` | ❌ | |
 
+### node:tls
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `tls.connect` | ✅ | TCP + TLS 1.2; system CAs, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `servername`, and `rejectUnauthorized: false` |
+| `TLSSocket` | ⚠️ | Evented socket interface with `data`/`end`/`error`/`close`/`drain`, backpressure, pause/resume, address metadata, `encrypted`, `authorized`, and `getProtocol()`; wrapping an existing socket is unsupported |
+| `tls.createServer` / `tls.Server` | ⚠️ | Basic TCP listener with PEM `key`/`cert`, `secureConnection`, and `tlsClientError`; qn-specific `keyFile`/`certFile` also accepted; advanced `net.Server` options are unsupported |
+| Custom CA/client cert/server-side SNI/ALPN/cipher/session options | ❌ | Throws explicit errors |
+| TLS 1.3 / Unix domain sockets | ❌ | TLS 1.2 over TCP only |
+
 ### node:https
 
 | API | Status | Notes |
@@ -239,7 +249,7 @@ Notes: `utf8` is the only supported text encoding (no latin1, hex, base64, etc.)
 | `https.request` / `https.get` | ✅ | TLS client over TCP; system CAs, `NODE_EXTRA_CA_CERTS`, `servername`, and `rejectUnauthorized: false`; no Agent pooling |
 | `IncomingMessage` / `ServerResponse` / `STATUS_CODES` | ✅ | Re-exported/shared with `node:http` |
 | `https.Agent` / `globalAgent` | ⚠️ | Minimal no-op compatibility objects; pooling and Agent options are unsupported |
-| Custom CA/client cert/SNI/ALPN/cipher options | ❌ | Throws explicit errors |
+| Custom CA/client cert/server-side SNI/ALPN/cipher options | ❌ | Throws explicit errors |
 | Unix domain sockets | ❌ | Throws |
 
 ### node:child_process
@@ -483,7 +493,7 @@ Notes:
 
 The following modules are not implemented. Importing them throws a `NodeCompatibilityError` with a descriptive message.
 
-`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:inspector`, `node:punycode`, `node:querystring`, `node:repl`, `node:string_decoder`, `node:tls`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
+`node:async_hooks`, `node:cluster`, `node:diagnostics_channel`, `node:dns`, `node:domain`, `node:http2`, `node:inspector`, `node:punycode`, `node:querystring`, `node:repl`, `node:string_decoder`, `node:v8`, `node:vm`, `node:wasi`, `node:worker_threads`
 
 ---
 
@@ -495,9 +505,8 @@ Available as `import WebSocket from "ws"` (vendored ws v8.19.0), not as a global
 
 | Feature | Status |
 |---------|--------|
-| Client (`ws://`) | ✅ |
-| Server | ✅ |
-| `wss://` (TLS) | ❌ (needs `TLSSocket`) |
+| Client (`ws://`, `wss://`) | ✅ |
+| Server (`ws://`, `wss://`) | ✅ (`wss://` uses an `https.Server`) |
 | `permessage-deflate` | ❌ |
 
 ### qn-specific Modules
@@ -519,11 +528,10 @@ Available as `import WebSocket from "ws"` (vendored ws v8.19.0), not as a global
 | `connect` / `accept` / `handshake` / `read` / `writeAll` | ✅ | Low-level BearSSL transport API |
 | System CA certificate loading | ✅ | |
 | `connect(host, { pin })` / `verifyPin` / `peerLeafDer` / `extractSpki` | ✅ | Certificate / SPKI pinning (qn-only, not in `node:tls`) |
-| `TLSSocket` class | ❌ | No Node.js-style socket API |
-| `tls.createServer` / `tls.connect` | ❌ | |
-| SNI / ALPN / client certs | ❌ | |
+| Node.js-style socket API | ✅ | Provided separately by `node:tls` |
+| SNI / ALPN / client certs | ⚠️ | Client hostname/SNI is supported by `node:tls`; ALPN, server-side SNI, and client certs are not |
 
-Notes: Low-level transport API, not the Node.js socket API. Used internally by `fetch` for HTTPS.
+Notes: Low-level transport API used by `node:tls`, `node:https`, and `fetch`. Most applications should use those higher-level APIs.
 
 ### qn:fetch
 

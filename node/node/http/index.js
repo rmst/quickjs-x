@@ -649,6 +649,7 @@ export class HTTPServer extends EventEmitter {
 			options = {}
 		}
 		const server = options?._server
+		const connectionEvent = options?._connectionEvent || 'connection'
 		this.#maxHeaderSize = options?.maxHeaderSize ?? DEFAULT_MAX_HEADER_SIZE
 		this.#maxHeaderCount = options?.maxHeaderCount ?? DEFAULT_MAX_HEADER_COUNT
 		this.#headerTimeout = options?.headerTimeout ?? DEFAULT_HEADER_TIMEOUT
@@ -660,7 +661,7 @@ export class HTTPServer extends EventEmitter {
 		this.#server.on('error', (err) => this.emit('error', err))
 		this.#server.on('close', () => this.emit('close'))
 
-		this.#server.on('connection', (socket) => {
+		this.#server.on(connectionEvent, (socket) => {
 			this.#sockets.add(socket)
 			socket.on('close', () => this.#sockets.delete(socket))
 			socket.on('error', () => {})

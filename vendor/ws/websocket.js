@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { connect as netConnect } from 'node:net'
-// TLSSocket not yet implemented in qn — wss:// will error at connect time
+import { connect as tlsConnect } from 'node:tls'
 import { randomBytes, createHash } from 'node:crypto'
 
 import Receiver from './receiver.js'
@@ -238,7 +238,8 @@ class WebSocket extends EventEmitter {
 	 * @private
 	 */
 	emitClose() {
-		if (!this._socket) {
+		if (!this._socket || !this._receiver) {
+			this._socket = null
 			this._readyState = WebSocket.CLOSED
 			this.emit('close', this._closeCode, this._closeMessage)
 			return
@@ -650,11 +651,6 @@ function initAsClient(websocket, address, protocols, options) {
 		invalidUrlMessage = 'The URL contains a fragment identifier'
 	}
 
-	if (isSecure) {
-		invalidUrlMessage =
-			'wss:// is not yet supported (requires TLSSocket implementation). Use ws:// instead.'
-	}
-
 	if (invalidUrlMessage) {
 		const err = new SyntaxError(invalidUrlMessage)
 		emitErrorAndClose(websocket, err)
@@ -704,15 +700,18 @@ function initAsClient(websocket, address, protocols, options) {
 		}
 	}
 
-	// Connect using raw TCP (wss:// is rejected above)
-	const socket = netConnect({ host: opts.host, port: opts.port })
+	const socket = isSecure
+		? tlsConnect({ ...opts, host: opts.host, port: opts.port, path: undefined })
+		: netConnect({ host: opts.host, port: opts.port })
 
 	websocket._socket = socket
+	socket[kWebSocket] = websocket
 
 	function onConnectError(err) {
 		if (socket[kWebSocket] === undefined) return
 
 		socket[kWebSocket] = undefined
+		websocket._socket = null
 		emitErrorAndClose(websocket, err)
 	}
 

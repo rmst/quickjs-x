@@ -1,7 +1,14 @@
 import { describe } from 'node:test'
 import assert from 'node:assert'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { testQnOnly, execAsync } from './util.js'
+
+const testDir = path.dirname(new URL(import.meta.url).pathname)
+const certFile = path.join(testDir, 'fixtures', 'test-cert.pem')
+const keyFile = path.join(testDir, 'fixtures', 'test-key.pem')
+const certPem = readFileSync(certFile, 'utf8')
+const keyPem = readFileSync(keyFile, 'utf8')
 
 describe('qn:proxy', () => {
 	testQnOnly('forwards GET request to backend', async ({ bin, dir }) => {
@@ -308,6 +315,51 @@ describe('qn:proxy', () => {
 		const output = await execAsync(bin, [`${dir}/test.js`])
 		const result = JSON.parse(output)
 		assert.strictEqual(result.received, 'echo:hello')
+	})
+
+	testQnOnly('proxies WebSocket messages to a WSS backend', async ({ bin, dir }) => {
+		writeFileSync(`${dir}/test.js`, `
+			import https from 'node:https'
+			import { WebSocket, WebSocketServer } from 'ws'
+			import { createProxy } from 'qn:proxy'
+
+			const backendHTTPS = https.createServer({
+				cert: ${JSON.stringify(certPem)},
+				key: ${JSON.stringify(keyPem)},
+			})
+			const backendWS = new WebSocketServer({ server: backendHTTPS })
+			backendWS.on('connection', (ws) => {
+				ws.on('message', (data) => ws.send('secure:' + data.toString()))
+			})
+			await new Promise(r => backendHTTPS.listen(0, '127.0.0.1', r))
+			const backendPort = backendHTTPS.address().port
+
+			const proxy = await createProxy({
+				port: 0,
+				hostname: '127.0.0.1',
+				route: () => \`https://localhost:\${backendPort}\`,
+			})
+			const client = new WebSocket(\`ws://127.0.0.1:\${proxy.address().port}/ws\`)
+			const received = await new Promise((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('ws timeout')), 5000)
+				client.on('open', () => client.send('hello'))
+				client.on('message', (data) => {
+					clearTimeout(timer)
+					resolve(data.toString())
+				})
+				client.on('error', (err) => { clearTimeout(timer); reject(err) })
+			})
+
+			console.log(received)
+			await new Promise(r => { client.on('close', r); client.close() })
+			await proxy.close()
+			backendWS.close()
+			backendHTTPS.close()
+		`)
+		const output = await execAsync(bin, [`${dir}/test.js`], {
+			env: { NODE_EXTRA_CA_CERTS: certFile },
+		})
+		assert.strictEqual(output, 'secure:hello')
 	})
 
 	testQnOnly('preserves Host header for WebSocket backend handshake', async ({ bin, dir }) => {

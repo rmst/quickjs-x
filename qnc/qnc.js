@@ -78,7 +78,7 @@ const DEFAULT_MODULES = [
 	"node:stream", "node:stream/promises",
 	"node:buffer", "node:url", "node:abort",
 	"node:fetch", "node:fetch/Headers", "node:fetch/Response",
-	"node:dgram", "node:net", "node:http", "node:http/parse", "node:https",
+	"node:dgram", "node:net", "node:tls", "node:http", "node:http/parse", "node:https",
 	"node:sqlite", "node:util", "node:assert", "node:assert/strict", "node:test",
 	"node:os", "node:module", "node:timers", "node:zlib",
 	// Stubs for unimplemented node:* modules (throw NodeCompatibilityError on import)
