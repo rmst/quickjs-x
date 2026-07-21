@@ -321,8 +321,8 @@ describe('Bundler tsconfig paths', () => {
 })
 
 // --------------------------------------------------------------
-// qnc (standalone binary compilation): resolverFn consults tsconfig
-// paths as a fallback so trees with aliased imports compile.
+// qnc (standalone binary compilation): the shared resolver consults the
+// tsconfig paths policy fallback so trees with aliased imports compile.
 // --------------------------------------------------------------
 describe('qnc tsconfig paths', () => {
 	test('paths + baseUrl in qnc-compiled binary', ({ dir }) => {

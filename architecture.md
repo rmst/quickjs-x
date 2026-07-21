@@ -26,7 +26,7 @@ Qn is built from ~24K LOC of own code plus four vendored C dependencies and one 
 - `qn-uv-fs-event.c` (218) — filesystem watching via `uv_fs_event_t` (powers `fs.watch`)
 
 **Other C modules** — ~3.5K LOC C:
-- `qnc/` — standalone compiler for building executables. Self-contained: embeds JS sources, C sources, headers, and static libs so it needs only a C compiler to produce binaries. Includes all default modules (node:\*, qn:\*, qx, ws) automatically. Native module auto-embedding via `package.json` `"qnc"` field.
+- `qnc/` — standalone compiler for building executables. A self-extracting wrapper carries qjs, the JS build orchestration, the bytecode engine, and all required JS/C sources, so output builds need only a C compiler. Includes all default modules (node:\*, qn:\*, qx, ws) automatically. Native module auto-embedding uses the `package.json` `"qnc"` field.
 - `sandboxed-worker/` (978) — sandboxed JS execution (currently broken, pending libuv integration)
 - `introspect/` (30) — closure introspection (bulk is in QuickJS patch)
 
@@ -34,7 +34,7 @@ Qn is built from ~24K LOC of own code plus four vendored C dependencies and one 
 - `node/qn/crypto/` — focused native units for PEM credentials, TLS, hashes/HMAC, ciphers/AEAD, and ECC, composed by `qn-crypto.c` and compiled with BearSSL sources
 - `node/node/sqlite/qjs-sqlite.c` — SQLite bindings, compiled with amalgamation
 
-**Module resolution** ([`module_resolution/`](module_resolution/Readme.md)) — ~1.2K LOC C. NODE_PATH, node_modules walking, package.json resolution, `.ts`/`.js` extension probing. For standalone binaries: `embedded://` namespace separation, compile-time import map, `file://` protocol for forced disk loading.
+**Module resolution** ([`module_resolution/`](module_resolution/Readme.md)) — ~1.2K LOC C shared by qn, qnc compile mode, and generated standalone runtimes. NODE_PATH, node_modules walking, package.json resolution, `.ts`/`.js` extension probing, `embedded://` namespace separation, compile-time import maps, and `file://` forced disk loading live in this single implementation. JS supplies only the final tsconfig/jsconfig policy fallback.
 
 **TypeScript support** — `.ts` files are transparently transformed on load via a per-thread source transform hook in `qn-vm.c`, called by `qn_module_loader` in `module-resolution.h`. The hook tries position-preserving strip mode first (accurate error locations), falling back to Sucrase's full transform for constructs like enums. Uses the same `stripTypeScriptTypes` / Sucrase infrastructure as the `node:module` shim.
 

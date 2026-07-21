@@ -9,27 +9,24 @@ NODE_PATH=./my_modules qnc -o my-app main.js
 
 ## Dependencies
 
-qnc is a fully standalone binary. To produce executables (`-o` mode) it only needs a C compiler (gcc by default, configured at build time via `-DCONFIG_CC`). All required support files (headers, static libraries) are embedded in the qnc binary itself and extracted to a temporary directory during compilation.
+qnc is self-contained. Producing an executable requires only a C compiler (`$CC`, or `gcc` by default); it does not require an installed qn, Node.js, QuickJS, or external libraries.
 
-The embedded support files are:
+This bootstrap boundary is intentional. qnc builds qn itself, so requiring an earlier qn would make clean builds depend on a matching preinstalled binary; requiring Node.js would violate qn's C-toolchain-only build contract. An embedded vanilla qjs is the small stable bootstrap, qnc.js owns build orchestration and source transforms, and qnc-engine exposes only the QuickJS operations and shared C resolver that JavaScript cannot provide itself.
+
+The executable is a small wrapper with an appended archive containing:
 
 | File | Purpose |
 |---|---|
-| `quickjs.h`, `quickjs-libc.h`, `cutils.h`, `list.h` | QuickJS headers (for compiling generated C and native modules) |
-| `module_resolution/module-resolution.h` | Module resolution header |
-| `exit-handler.h` | Exit handler header |
-| `libuv/qn-vm.h` | VM header |
-| `libquickjs.a` | Pre-built QuickJS static library (includes patched quickjs-libc, introspect, vm, uv-utils) |
-| `libuv.a` | Pre-built libuv static library |
+| `qjs`, `qnc.js`, `qnc-engine.so` | Compiler host, orchestration, and bytecode engine |
+| QuickJS, libuv, miniz, and qn C sources/headers | Sources used to build the output executable |
+| qn, qx, ws, and Sucrase JavaScript sources | Default embeddable modules and source transforms |
+| `module-resolution.h` and runtime headers | Shared resolution and generated-runtime support |
 
-### Support file resolution order
+The wrapper extracts this archive once to `~/.cache/qnc`, or `<cache-dir>/_qnc_support` when `--cache-dir` is supplied. A stamp tied to the qnc executable avoids repeated extraction. It then executes the embedded qjs with qnc.js. qnc.js traces and transforms modules, while qnc-engine compiles QuickJS bytecode. C sources are compiled and linked directly; `--cache-dir` also enables reuse of object files.
 
-qnc resolves support files in this order:
-1. **Directory of the executable** — if `quickjs.h` is found next to the binary (used during development / `make build`)
-2. **Embedded archive** — extracted from the qnc binary itself to a temp dir (for standalone distribution)
-3. **System prefix** — `$PREFIX/include/quickjs` and `$PREFIX/lib/quickjs` (fallback)
+### Module-resolution architecture
 
-The embedded archive uses a simple append-to-binary format: support files are appended after the ELF/Mach-O binary with a directory footer. The `qnc-pack` tool (built during `make build`) handles the packing. At runtime, qnc reads its own executable via `uv_exepath()`, checks for the archive footer, and extracts to `/tmp/qnc_XXXXXX/` which is cleaned up after compilation.
+Compile-time resolution deliberately uses the same C normalizer as qn. qnc-engine bridges two narrow callbacks to qnc.js: the final tsconfig/jsconfig policy fallback and import-map recording. qnc.js does not implement NODE_PATH, `node_modules`, package exports, extension probing, or symlink resolution. See [module_resolution/Readme.md](module_resolution/Readme.md) for the invariant and resolution order.
 
 ## Output Modes
 
@@ -55,7 +52,8 @@ The embedded archive uses a simple append-to-binary format: support files are ap
 | `--keep-source` | Keep source code in bytecode |
 | `-x` | Byte-swapped output |
 | `-v` | Verbose (show gcc command line) |
-| `-flto` | Enable link-time optimization |
+| `--cache-dir dir` | Cache extracted support files and compiled objects |
+| `--no-default-modules` | Embed only explicitly imported or `-D` modules |
 
 ## Module Embedding
 
@@ -200,11 +198,7 @@ This gives a smooth development workflow: use `qnc package` to build `.so` files
 The qn runtime itself is built using qnc:
 
 ```bash
-NODE_PATH=./node:./qx qnc \
-  -M qn_uv_fs,qn_uv_fs -M qn_vm,qn_vm ...     \
-  -D node:fs -D node:path -D node:sqlite ...    \
-  --link qn-uv-fs.o --link qn-vm.o ...          \
-  -o bin/qn node/bootstrap.js
+qnc --cache-dir bin/linux/obj/qnc -o bin/linux/qn node/bootstrap.js
 ```
 
-This embeds all Node.js shims, the qx shell scripting module, and links native C modules. SQLite and TLS (including BearSSL) are auto-detected via their `package.json` `"qnc"` fields. Libuv binding modules use `-M` + `--link` as core infrastructure.
+qnc includes the default node:*, qn:*, qx, and ws modules automatically, compiles the qn/libuv runtime sources, and auto-detects native packages through their `package.json` `"qnc"` fields. The Makefile invokes the same command for qx with a different bootstrap.

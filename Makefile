@@ -77,7 +77,7 @@ QNC_ENGINE_LDFLAGS = -shared
 ifeq ($(PLATFORM),darwin)
 QNC_ENGINE_LDFLAGS += -undefined dynamic_lookup
 endif
-$(QNC_ENGINE): qnc/engine.c $(BIN_DIR)/quickjs/.patched | $(BIN_DIR)
+$(QNC_ENGINE): qnc/engine.c module_resolution/module-resolution.h $(BIN_DIR)/quickjs/.patched | $(BIN_DIR)
 	$(CC) -Wall -O2 -fPIC $(QNC_ENGINE_LDFLAGS) -D_GNU_SOURCE -I. -I$(BIN_DIR)/quickjs -o $@ $<
 
 # Build qnc-pack tool (used at build time to embed support files)

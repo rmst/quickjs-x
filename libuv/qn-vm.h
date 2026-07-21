@@ -102,8 +102,8 @@ JSValue js_qn_set_source_transform(JSContext *ctx, JSValueConst this_val,
  */
 void qn_set_module_resolver_fallback(JSContext *ctx, JSValue fn);
 void qn_free_module_resolver_fallback(JSRuntime *rt);
-char *qn_apply_module_resolver_fallback(JSContext *ctx, const char *specifier,
-                                          const char *base_name);
+char *qn_apply_module_resolver_fallback(
+	JSContext *ctx, const char *specifier, const char *base_name, void *opaque);
 /* JS-callable: globalThis.__qn_setModuleResolverFallback(fn) */
 JSValue js_qn_set_module_resolver_fallback(JSContext *ctx, JSValueConst this_val,
                                              int argc, JSValueConst *argv);

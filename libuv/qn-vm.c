@@ -111,8 +111,9 @@ void qn_free_module_resolver_fallback(JSRuntime *rt) {
 	}
 }
 
-char *qn_apply_module_resolver_fallback(JSContext *ctx, const char *specifier,
-                                          const char *base_name) {
+char *qn_apply_module_resolver_fallback(
+	JSContext *ctx, const char *specifier, const char *base_name, void *opaque) {
+	(void)opaque;
 	if (!g_resolver_fallback_set)
 		return NULL;
 	JSValue args[2];

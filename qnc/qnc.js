@@ -37,8 +37,9 @@ const repoRoot = (() => {
 	return resolved || root
 })()
 
-// Auto-configure NODE_PATH for module resolution during compilation
-;(() => {
+// Private search path for qnc's bundled support modules. This stays separate
+// from user NODE_PATH so strict Node mode can disable the latter.
+const internalModulePath = (() => {
 	let basePaths
 	if (extractedMode) {
 		// Extracted mode: JS sources are under js/ prefix
@@ -49,20 +50,15 @@ const repoRoot = (() => {
 		// Dev mode: sources are in the repo tree
 		const [, e1] = os.stat(repoRoot + "/node")
 		const [, e2] = os.stat(repoRoot + "/vendor")
-		if (e1 !== 0 || e2 !== 0) return
+		if (e1 !== 0 || e2 !== 0) return ""
 		basePaths = [repoRoot, repoRoot + "/node",
 			repoRoot + "/vendor", repoRoot + "/vendor/sucrase-js"]
 	}
-	const existing = std.getenv("NODE_PATH") || ""
-	const newPath = existing
-		? existing + ":" + basePaths.join(":")
-		: basePaths.join(":")
-	std.setenv("NODE_PATH", newPath)
+	return basePaths.join(":")
 })()
 
 /* ---- Constants ---- */
 const EMBEDDED_PREFIX = "embedded://"
-const EXTENSION_SUFFIXES = [".js", ".ts", "/index.js", "/index.ts"]
 const CJS_PREFIX = 'import { __cjsLoad } from "qn:cjs"\n' +
 	'const { module: __cjs_module } = __cjsLoad(' +
 	'import.meta.filename, import.meta.dirname, ' +
@@ -149,182 +145,6 @@ function execCmd(argv, verbose, label) {
 	return pid
 }
 
-/* ---- Module resolution ---- */
-
-function translateColons(name) {
-	// node:fs → node/fs, qn:http → qn/http
-	const i = name.indexOf(":")
-	if (i < 0) return null
-	return name.slice(0, i) + "/" + name.slice(i + 1)
-}
-
-function isFilesystemPath(name) {
-	return name.startsWith("/") || name.startsWith("./") || name.startsWith("../") ||
-		name === "." || name === ".."
-}
-
-function normalizeModuleName(baseName, name) {
-	if (!name.startsWith(".")) return name
-	// Find base directory
-	const slash = baseName.lastIndexOf("/")
-	let dir = slash >= 0 ? baseName.slice(0, slash) : ""
-	let rest = name
-	while (rest.startsWith("./") || rest.startsWith("../")) {
-		if (rest.startsWith("./")) {
-			rest = rest.slice(2)
-		} else if (rest.startsWith("../")) {
-			rest = rest.slice(3)
-			const ds = dir.lastIndexOf("/")
-			if (ds >= 0) dir = dir.slice(0, ds)
-			else dir = ""
-		}
-	}
-	return dir ? dir + "/" + rest : rest
-}
-
-function resolveWithIndex(name) {
-	if (fileExists(name)) return name
-	for (const suffix of EXTENSION_SUFFIXES) {
-		const p = name + suffix
-		if (fileExists(p)) return p
-	}
-	return null
-}
-
-function resolveNodePath(name) {
-	const nodePath = std.getenv("NODE_PATH")
-	if (!nodePath) return null
-	for (let dir of nodePath.split(":")) {
-		if (!dir) continue
-		while (dir.endsWith("/")) dir = dir.slice(0, -1)
-		const full = dir + "/" + name
-		if (fileExists(full)) return full
-		for (const suffix of EXTENSION_SUFFIXES) {
-			const p = full + suffix
-			if (fileExists(p)) return p
-		}
-	}
-	return null
-}
-
-function resolvePackageJson(pkgDir, subpath) {
-	const pkgPath = pkgDir + "/package.json"
-	const content = readFile(pkgPath)
-	if (!content) return null
-	let pkg
-	try { pkg = JSON.parse(content) } catch { return null }
-
-	// Try "exports" field
-	if (pkg.exports !== undefined) {
-		const key = subpath === "." ? "." : "./" + subpath
-		const m = typeof pkg.exports === "string"
-			? (subpath === "." ? { target: pkg.exports, capture: null } : null)
-			: (typeof pkg.exports === "object" && !Array.isArray(pkg.exports))
-				? matchExportKey(pkg.exports, key)
-				: null
-		if (m) {
-			const resolved = resolveExportTarget(m.target, m.capture, pkgDir)
-			if (resolved) return resolved
-		}
-		// For root imports, try treating exports object as conditional
-		if (subpath === "." && typeof pkg.exports === "object" && !Array.isArray(pkg.exports)) {
-			const resolved = resolveExportTarget(pkg.exports, null, pkgDir)
-			if (resolved) return resolved
-		}
-	}
-
-	// Fallback to "main" field
-	if (subpath === "." && typeof pkg.main === "string") {
-		return resolveExportTarget(pkg.main, null, pkgDir)
-	}
-	return null
-}
-
-function matchExportKey(obj, key) {
-	if (key in obj && !key.includes("*")) return { target: obj[key], capture: null }
-	let best = null
-	for (const k of Object.keys(obj)) {
-		const star = k.indexOf("*")
-		if (star < 0) continue
-		const prefix = k.slice(0, star)
-		const suffix = k.slice(star + 1)
-		if (!key.startsWith(prefix)) continue
-		if (suffix && !key.endsWith(suffix)) continue
-		if (key.length < prefix.length + suffix.length) continue
-		if (!best
-			|| prefix.length > best.prefix.length
-			|| (prefix.length === best.prefix.length && suffix.length > best.suffix.length)) {
-			best = {
-				target: obj[k],
-				capture: key.slice(prefix.length, key.length - suffix.length),
-				prefix,
-				suffix,
-			}
-		}
-	}
-	return best
-}
-
-function resolveExportTarget(target, capture, pkgDir) {
-	if (typeof target === "string") {
-		let path = capture == null ? target : target.replaceAll("*", capture)
-		if (path.startsWith("./")) path = path.slice(2)
-		return pkgDir + "/" + path
-	}
-	if (typeof target === "object" && target !== null && !Array.isArray(target)) {
-		for (const cond of ["import", "default"]) {
-			if (cond in target) {
-				const resolved = resolveExportTarget(target[cond], capture, pkgDir)
-				if (resolved) return resolved
-			}
-		}
-	}
-	return null
-}
-
-function resolveNodeModules(baseName, name) {
-	// Extract package name
-	let pkgLen
-	if (name.startsWith("@")) {
-		pkgLen = name.indexOf("/", name.indexOf("/") + 1)
-		if (pkgLen < 0) pkgLen = name.length
-	} else {
-		pkgLen = name.indexOf("/")
-		if (pkgLen < 0) pkgLen = name.length
-	}
-	const pkgName = name.slice(0, pkgLen)
-	const subpath = pkgLen < name.length ? name.slice(pkgLen + 1) : "."
-
-	let dir = dirname(baseName)
-	while (dir && dir !== "/") {
-		const pkgDir = dir + "/node_modules/" + pkgName
-		if (dirExists(pkgDir)) {
-			// Try package.json
-			const resolved = resolvePackageJson(pkgDir, subpath)
-			if (resolved && fileExists(resolved)) return resolved
-
-			// Fallback: direct file resolution
-			const target = subpath === "." ? pkgDir : pkgDir + "/" + subpath
-			const found = resolveWithIndex(target)
-			if (found) return found
-		}
-		const parent = dirname(dir)
-		if (parent === dir) break
-		dir = parent
-	}
-	return null
-}
-
-function resolveCompileRealpath(path) {
-	const real = realpath(path)
-	if (!real) return null
-	const cwd = getCwd()
-	if (cwd && real.startsWith(cwd + "/")) {
-		return real.slice(cwd.length + 1)
-	}
-	return real
-}
-
 /* ---- POSIX path helpers (for tsconfig paths env) ----
    qnc.js runs on vanilla qjs without node:path, so we inline minimal
    helpers sufficient for the tsconfig-paths resolver. */
@@ -361,9 +181,8 @@ function resolvePosix(...parts) {
 
 function isAbsolutePosix(p) { return typeof p === "string" && p.startsWith("/") }
 
-/* ---- tsconfig paths resolver (preloaded at module init; consulted by
-   resolverFn as a last-resort fallback for bare specifiers so source
-   trees using TypeScript `compilerOptions.paths` compile via qnc). */
+/* ---- tsconfig paths resolver (preloaded at module init; exposed to the
+   shared C resolver as its last-resort policy fallback). */
 
 const _tsconfigPathsModulePath = extractedMode
 	? scriptDir + "/js/node/qn/tsconfig-paths.js"
@@ -384,42 +203,12 @@ const tsconfigPathsResolver = _createTsconfigPathsResolver({
 
 /* ---- Source transforms ---- */
 
-let tsTransform = null
-
-function initTypeScriptTransform() {
-	// Load Sucrase for TypeScript stripping
-	// We import node:module which imports qn:sucrase → vendor/sucrase-js
-	const nodePath = std.getenv("NODE_PATH") || ""
-	const dirs = nodePath.split(":").filter(Boolean)
-
-	// Try to find and load the transform
-	for (const dir of dirs) {
-		const modulePath = dir + "/node/module.js"
-		if (fileExists(modulePath)) {
-			try {
-				const mod = std.loadFile(modulePath)
-				// We can't easily dynamic-import in vanilla qjs within
-				// this context, so we'll use a simpler approach: check
-				// if the Sucrase transform is available via the compile
-				// engine's separate TS runtime
-				break
-			} catch {}
-		}
-	}
-}
-
-// For TypeScript transform, we'll use a separate Compiler instance
-// dedicated to running the transform in its own context.
-// Actually, since qnc.js runs on vanilla qjs which can load modules,
-// we can import Sucrase directly.
 let sucraseTransform = null
 let sucraseParse = null
 let sucraseLoadError = null
 
 function loadSucrase() {
-	// Find sucrase in NODE_PATH
-	const nodePath = std.getenv("NODE_PATH") || ""
-	for (const dir of nodePath.split(":").filter(Boolean)) {
+	for (const dir of internalModulePath.split(":").filter(Boolean)) {
 		const indexPath = dir + "/qn/sucrase.js"
 		if (fileExists(indexPath)) {
 			return import(indexPath)
@@ -783,7 +572,10 @@ function generateCFile(entries, importMap, initModules, embeddedNames,
     .import_map = qn_import_map,
     .import_map_count = ${importMap.length},
     .compile_mode = 0,
+	.module_path = NULL,
     .record_import = NULL,
+	.resolve_fallback = qn_apply_module_resolver_fallback,
+	.callback_opaque = NULL,
 };\n\n`
 
 	// Feature list
@@ -943,6 +735,7 @@ function compileProject(opts) {
 		stripFlags,
 		byteSwap,
 		prefix: prefix || "qjsc_",
+		modulePath: internalModulePath,
 	})
 
 	// Register system C modules and add them to init list
@@ -957,7 +750,6 @@ function compileProject(opts) {
 	const embeddedNames = new Set()
 	const nativeModules = []     // parsed native module configs
 	const cwd = getCwd()
-	const entryCnames = new Set() // cnames of entry-point modules
 
 	// Track which modules have been loaded (avoid duplicates)
 	const loadedModules = new Set()
@@ -974,97 +766,14 @@ function compileProject(opts) {
 		})
 	})
 
-	function resolverFn(base, specifier) {
-		// Compile-mode normalizer
-		const rawBase = base.startsWith(EMBEDDED_PREFIX) ?
-			base.slice(EMBEDDED_PREFIX.length) : base
-
-		// Colon translation: node:fs → node/fs
-		const translated = translateColons(specifier)
-		const workName = translated || specifier
-
-		// Resolve relative paths
-		let effectiveBase = rawBase
-		if (isFilesystemPath(rawBase)) {
-			const real = realpath(rawBase)
-			if (real) effectiveBase = real
-		}
-
-		let resolved = normalizeModuleName(effectiveBase, workName)
-		let foundOnDisk = false
-
-		if (!isFilesystemPath(workName)) {
-			// Bare import — search NODE_PATH and node_modules
-			const fullPath = resolveNodePath(resolved)
-			if (fullPath) {
-				const real = resolveCompileRealpath(fullPath)
-				resolved = real || fullPath
-				foundOnDisk = true
-			} else {
-				const nmResolved = resolveNodeModules(effectiveBase, resolved)
-				if (nmResolved) {
-					const real = resolveCompileRealpath(nmResolved)
-					resolved = real || nmResolved
-					foundOnDisk = true
-				} else {
-					const withExt = resolveWithIndex(resolved)
-					if (withExt) {
-						const real = resolveCompileRealpath(withExt)
-						resolved = real || withExt
-						foundOnDisk = true
-					} else {
-						// tsconfig.json / jsconfig.json `compilerOptions.paths`
-						// fallback — consulted only when the usual lookups miss,
-						// so catch-all aliases don't shadow real packages.
-						// Walk up from the importing file's real directory.
-						const baseAbs = isAbsolutePosix(effectiveBase)
-							? effectiveBase
-							: resolvePosix(cwd, effectiveBase)
-						const fromDir = dirname(baseAbs)
-						const viaPaths = tsconfigPathsResolver.resolve(specifier, fromDir)
-						if (viaPaths) {
-							const real = resolveCompileRealpath(viaPaths)
-							resolved = real || viaPaths
-							foundOnDisk = true
-						}
-					}
-				}
-			}
-
-			if (foundOnDisk) {
-				// Record import map entry for bare imports
-				importMap.push({
-					base: EMBEDDED_PREFIX + (resolveCompileRealpath(rawBase) || rawBase),
-					specifier,
-					resolved: EMBEDDED_PREFIX + resolved,
-				})
-				return EMBEDDED_PREFIX + resolved
-			}
-			// Not found — assume C module, return as-is
-			return resolved
-		} else {
-			// Filesystem path — probe extensions
-			const probed = resolveWithIndex(resolved)
-			if (probed) resolved = probed
-
-			const real = resolveCompileRealpath(resolved)
-			if (real) resolved = real
-
-			// Record import map entries for paths that differ between
-			// the original specifier (stored in bytecode) and the resolved
-			// embedded name. This handles absolute paths that get CWD-stripped,
-			// ensuring the runtime normalizer can resolve them.
-			if (specifier !== resolved && (specifier.startsWith("/") || resolved.startsWith("/"))) {
-				importMap.push({
-					base: EMBEDDED_PREFIX + (resolveCompileRealpath(rawBase) || rawBase),
-					specifier,
-					resolved: EMBEDDED_PREFIX + resolved,
-				})
-			}
-			return EMBEDDED_PREFIX + resolved
-		}
-	}
-	compiler.setResolver(resolverFn)
+	compiler.setImportHandler((base, specifier, resolved) => {
+		importMap.push({ base, specifier, resolved })
+	})
+	compiler.setResolverFallback((specifier, base) => {
+		const baseAbs = isAbsolutePosix(base) ? base : resolvePosix(cwd, base)
+		const fromDir = base.startsWith("<input") ? cwd : dirname(baseAbs)
+		return tsconfigPathsResolver.resolve(specifier, fromDir) || null
+	})
 
 	compiler.setLoader((name) => {
 		if (loadedModules.has(name)) return null
@@ -1172,21 +881,14 @@ function compileProject(opts) {
 	// embedded://<input> base so the runtime normalizer can find them.
 	for (let di = 0; di < dynamicModules.length; di++) {
 		const dyn = dynamicModules[di]
-		// Resolve through our resolver with <input> base
-		const resolved = resolverFn(EMBEDDED_PREFIX + "<input>", dyn)
+		// Resolve through the same shared compile-mode resolver used by imports
+		const resolved = compiler.resolve(EMBEDDED_PREFIX + "<input>", dyn)
 		if (!resolved) {
 			std.err.puts(`Could not resolve dynamic module '${dyn}'\n`)
 			std.exit(1)
 		}
 
 		if (loadedModules.has(resolved)) continue
-
-		// Record import map entry with <input> base for runtime lookups
-		importMap.push({
-			base: EMBEDDED_PREFIX + "<input>",
-			specifier: dyn,
-			resolved,
-		})
 
 		// Trigger the loader by compiling a synthetic import
 		const importSource = `import "${dyn}"\n`

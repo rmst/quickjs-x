@@ -1,6 +1,12 @@
 # Module Resolution
 
-Shared module resolution for the qjsx interpreter, the qnc compiler, and standalone compiled binaries. Implemented in `module-resolution.h`.
+Shared module resolution for the qn interpreter, the qnc compiler, and standalone compiled binaries. Implemented in `module-resolution.h`.
+
+## Design invariant
+
+qn and qnc must select the same module for the same importer, specifier, environment, and filesystem. Both therefore call `qn_module_normalizer`; qnc does not maintain a JavaScript copy of path, package, or extension resolution. Environment-specific policy can be supplied through resolver-context callbacks: currently qn and qnc both use this only for the final tsconfig/jsconfig `paths` fallback, after normal package and filesystem lookup. Compile mode also reports canonical resolutions through a callback so qnc can generate the standalone import map.
+
+Keep core resolution changes in `module-resolution.h` and cover them in `qnc-parity.test.js`. This prevents the interpreter and compiler from drifting while leaving source transforms and build orchestration in JavaScript.
 
 ## Import Specifiers
 
@@ -20,16 +26,17 @@ Shared module resolution for the qjsx interpreter, the qnc compiler, and standal
 
 Tried in order until one succeeds:
 
-1. **NODE_PATH**: search each directory in the `NODE_PATH` environment variable for `<dir>/<name>`, `<dir>/<name>.js`, `<dir>/<name>/index.js`
+1. **NODE_PATH**: search each directory in the `NODE_PATH` environment variable for the exact name, `.js`, `.ts`, `/index.js`, and `/index.ts`
 2. **node_modules walking**: walk up from the importing file, check `node_modules/<pkg>/` with `package.json` resolution (`exports` field with subpath and conditional support, then `main` field)
-3. **Extension probing** (bundler mode only): try `<name>.js`, `<name>/index.js`
+3. **Extension probing** (bundler mode only): try the exact name, `.js`, `.ts`, `/index.js`, and `/index.ts`
+4. **Policy fallback**: consult tsconfig/jsconfig `paths` and `baseUrl`
 
 ### 3. Filesystem path resolution
 
 For relative and absolute imports:
 
 1. Resolve `./` and `../` against the importing module's directory
-2. **Extension probing** (bundler mode only): try `.js`, `/index.js`
+2. **Extension probing** (bundler mode only): try `.js`, `.ts`, `/index.js`, and `/index.ts`
 3. **Symlink resolution**: `realpath()` to canonical path
 
 Relative imports resolve against the **real location** (after symlink resolution) of the importing file, matching Node.js ESM behavior.
@@ -38,7 +45,7 @@ Relative imports resolve against the **real location** (after symlink resolution
 
 **Bundler mode** (default): extension probing enabled, more lenient.
 
-**Node mode** (`QN_MODULE_RESOLUTION=node`): explicit extensions required, matches Node.js ESM exactly. NODE_PATH and colon-to-slash still work.
+**Node mode** (`QN_MODULE_RESOLUTION=node`): explicit extensions are required and NODE_PATH lookup is disabled, matching Node.js ESM resolution more closely. `node_modules` package resolution and colon-to-slash translation still apply.
 
 
 ## Standalone Compiled Binaries
@@ -62,11 +69,7 @@ The compiler resolves all imports on the filesystem and assigns each module an `
 - **Absolute paths**: files outside CWD keep their full path, e.g. `embedded:///opt/shared/lib.js`
 - **C modules** (`std`, `os`): kept as plain names without the prefix
 
-An **import map** records how each `(importer, specifier)` pair was resolved. This captures resolutions the runtime can't reproduce on its own:
-- Bare imports (NODE_PATH lookup, extension probing)
-- Absolute path imports (CWD-relativization)
-
-Relative imports (`./foo`, `../bar`) are NOT recorded because the runtime can reproduce them via path arithmetic on the embedded base name.
+An **import map** records every filesystem-backed `(importer, specifier)` resolution. Bare and absolute imports inherently require it; relative imports are also recorded because extension probing, symlink canonicalization, or CWD-relativization can produce a name that runtime path arithmetic cannot reconstruct after the source tree has been removed.
 
 ### Runtime (standalone binary)
 

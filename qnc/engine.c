@@ -2,15 +2,15 @@
  * qnc engine — QuickJS native module exposing bytecode compilation to JS.
  *
  * Provides a Compiler class that wraps a separate QuickJS runtime for
- * compilation. Module resolution and file loading are delegated to JS
- * callbacks, keeping C focused on what only C can do: JS_Eval with
- * COMPILE_ONLY and JS_WriteObject for bytecode serialization.
+ * compilation. Module resolution is shared with qn; policy fallback, import
+ * map recording, and file loading are delegated to JS callbacks.
  *
  * Loaded by vanilla qjs: import { Compiler } from './qnc-engine.so'
  */
 #include "quickjs.h"
 #include "quickjs-libc.h"
 #include "cutils.h"
+#include "module_resolution/module-resolution.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -20,13 +20,16 @@
 typedef struct {
 	/* Host context (where JS callbacks live) */
 	JSContext *host_ctx;
-	JSValue resolve_fn;     /* (base, specifier) → string|null */
+	JSValue resolver_fallback_fn; /* (specifier, base) → string|null */
+	JSValue import_handler_fn;    /* (base, specifier, resolved) → void */
 	JSValue load_fn;        /* (name) → { source, type, cname?, regName? } | null */
 	JSValue bytecode_fn;    /* (cname, bytecodeU8, type, moduleName?) → void */
+	int callback_failed;
 
 	/* Compile context (separate runtime for compilation) */
 	JSRuntime *compile_rt;
 	JSContext *compile_ctx;
+	QNModuleResolverContext resolver_ctx;
 
 	/* C name tracking (avoid collisions) */
 	char **cnames;
@@ -36,7 +39,8 @@ typedef struct {
 	/* Options */
 	int strip_flags;
 	int byte_swap;
-	const char *c_ident_prefix;
+	char *c_ident_prefix;
+	char *module_path;
 } QNCCompiler;
 
 static JSClassID compiler_class_id;
@@ -44,6 +48,10 @@ static JSClassID compiler_class_id;
 /* Forward decls */
 static char *qnc_module_normalizer(JSContext *ctx, const char *base,
                                    const char *name, void *opaque);
+static char *qnc_resolver_fallback(JSContext *ctx, const char *specifier,
+									   const char *base, void *opaque);
+static void qnc_record_import(const char *base, const char *specifier,
+							  const char *resolved, void *opaque);
 static JSModuleDef *qnc_module_loader(JSContext *ctx, const char *name,
                                       void *opaque, JSValueConst attributes);
 static int qnc_dummy_init(JSContext *ctx, JSModuleDef *m);
@@ -148,41 +156,87 @@ static JSValue serialize_bytecode(QNCCompiler *comp, JSValue obj, int json_mode)
 
 /* ---- Module callbacks (compile runtime → JS host) ---- */
 
-static char *qnc_module_normalizer(JSContext *ctx, const char *base,
-                                   const char *name, void *opaque)
+static void qnc_dump_host_exception(QNCCompiler *comp, const char *operation)
+{
+	JSValue exc = JS_GetException(comp->host_ctx);
+	const char *str = JS_ToCString(comp->host_ctx, exc);
+	if (str) {
+		fprintf(stderr, "qnc: %s error: %s\n", operation, str);
+		JS_FreeCString(comp->host_ctx, str);
+	}
+	JS_FreeValue(comp->host_ctx, exc);
+	comp->callback_failed = 1;
+}
+
+static char *qnc_resolver_fallback(JSContext *ctx, const char *specifier,
+									   const char *base, void *opaque)
 {
 	QNCCompiler *comp = opaque;
-	if (JS_IsUndefined(comp->resolve_fn)) return js_strdup(ctx, name);
+	if (JS_IsUndefined(comp->resolver_fallback_fn)) return NULL;
 
-	JSValue args[2];
-	args[0] = JS_NewString(comp->host_ctx, base);
-	args[1] = JS_NewString(comp->host_ctx, name);
-	JSValue result = JS_Call(comp->host_ctx, comp->resolve_fn, JS_UNDEFINED,
-	                         2, args);
+	JSValue args[2] = {
+		JS_NewString(comp->host_ctx, specifier),
+		JS_NewString(comp->host_ctx, base),
+	};
+	JSValue result = JS_Call(comp->host_ctx, comp->resolver_fallback_fn,
+							 JS_UNDEFINED, 2, args);
 	JS_FreeValue(comp->host_ctx, args[0]);
 	JS_FreeValue(comp->host_ctx, args[1]);
 
 	if (JS_IsException(result)) {
-		JSValue exc = JS_GetException(comp->host_ctx);
-		const char *str = JS_ToCString(comp->host_ctx, exc);
-		if (str) {
-			fprintf(stderr, "qnc: resolve error: %s\n", str);
-			JS_FreeCString(comp->host_ctx, str);
-		}
-		JS_FreeValue(comp->host_ctx, exc);
+		qnc_dump_host_exception(comp, "resolver fallback");
 		return NULL;
 	}
-	if (JS_IsNull(result) || JS_IsUndefined(result)) {
+	if (!JS_IsString(result)) {
 		JS_FreeValue(comp->host_ctx, result);
 		return NULL;
 	}
 
-	const char *str = JS_ToCString(comp->host_ctx, result);
+	size_t len;
+	const char *str = JS_ToCStringLen(comp->host_ctx, &len, result);
 	JS_FreeValue(comp->host_ctx, result);
-	if (!str) return NULL;
-	char *ret = js_strdup(ctx, str);
+	if (!str) {
+		comp->callback_failed = 1;
+		return NULL;
+	}
+	char *resolved = js_strndup(ctx, str, len);
 	JS_FreeCString(comp->host_ctx, str);
-	return ret;
+	if (!resolved) comp->callback_failed = 1;
+	return resolved;
+}
+
+static void qnc_record_import(const char *base, const char *specifier,
+							  const char *resolved, void *opaque)
+{
+	QNCCompiler *comp = opaque;
+	if (JS_IsUndefined(comp->import_handler_fn)) return;
+
+	JSValue args[3] = {
+		JS_NewString(comp->host_ctx, base),
+		JS_NewString(comp->host_ctx, specifier),
+		JS_NewString(comp->host_ctx, resolved),
+	};
+	JSValue result = JS_Call(comp->host_ctx, comp->import_handler_fn,
+							 JS_UNDEFINED, 3, args);
+	for (int i = 0; i < 3; i++) JS_FreeValue(comp->host_ctx, args[i]);
+	if (JS_IsException(result)) {
+		qnc_dump_host_exception(comp, "import-map handler");
+		return;
+	}
+	JS_FreeValue(comp->host_ctx, result);
+}
+
+static char *qnc_module_normalizer(JSContext *ctx, const char *base,
+                                   const char *name, void *opaque)
+{
+	QNCCompiler *comp = opaque;
+	comp->callback_failed = 0;
+	char *resolved = qn_module_normalizer(ctx, base, name,
+									  &comp->resolver_ctx);
+	if (!comp->callback_failed) return resolved;
+	if (resolved) js_free(ctx, resolved);
+	JS_ThrowInternalError(ctx, "module resolver callback failed");
+	return NULL;
 }
 
 static JSModuleDef *qnc_module_loader(JSContext *ctx, const char *name,
@@ -380,16 +434,14 @@ static int qnc_dummy_init(JSContext *ctx, JSModuleDef *m)
 
 /* ---- Compiler constructor / destructor ---- */
 
-static void compiler_finalizer(JSRuntime *rt, JSValue val)
+static void compiler_free(JSRuntime *host_rt, QNCCompiler *comp)
 {
-	QNCCompiler *comp = JS_GetOpaque(val, compiler_class_id);
 	if (!comp) return;
 
-	/* Use JS_FreeValueRT since the host context may already be freed
-	   when this finalizer runs during JS_FreeRuntime. */
-	JS_FreeValueRT(rt, comp->resolve_fn);
-	JS_FreeValueRT(rt, comp->load_fn);
-	JS_FreeValueRT(rt, comp->bytecode_fn);
+	JS_FreeValueRT(host_rt, comp->resolver_fallback_fn);
+	JS_FreeValueRT(host_rt, comp->import_handler_fn);
+	JS_FreeValueRT(host_rt, comp->load_fn);
+	JS_FreeValueRT(host_rt, comp->bytecode_fn);
 
 	if (comp->compile_ctx) JS_FreeContext(comp->compile_ctx);
 	if (comp->compile_rt) {
@@ -399,23 +451,40 @@ static void compiler_finalizer(JSRuntime *rt, JSValue val)
 
 	for (int i = 0; i < comp->cname_count; i++) free(comp->cnames[i]);
 	free(comp->cnames);
-	free((void *)comp->c_ident_prefix);
-	js_free_rt(rt, comp);
+	free(comp->c_ident_prefix);
+	free(comp->module_path);
+	js_free_rt(host_rt, comp);
+}
+
+static void compiler_finalizer(JSRuntime *rt, JSValue val)
+{
+	QNCCompiler *comp = JS_GetOpaque(val, compiler_class_id);
+	compiler_free(rt, comp);
 }
 
 static JSValue compiler_constructor(JSContext *ctx, JSValueConst new_target,
                                     int argc, JSValueConst *argv)
 {
+	JSRuntime *host_rt = JS_GetRuntime(ctx);
 	QNCCompiler *comp = js_mallocz(ctx, sizeof(QNCCompiler));
 	if (!comp) return JS_EXCEPTION;
 
 	comp->host_ctx = ctx;
-	comp->resolve_fn = JS_UNDEFINED;
+	comp->resolver_fallback_fn = JS_UNDEFINED;
+	comp->import_handler_fn = JS_UNDEFINED;
 	comp->load_fn = JS_UNDEFINED;
 	comp->bytecode_fn = JS_UNDEFINED;
 	comp->strip_flags = JS_STRIP_SOURCE;
 	comp->byte_swap = 0;
 	comp->c_ident_prefix = strdup("qjsc_");
+	if (!comp->c_ident_prefix) {
+		compiler_free(host_rt, comp);
+		return JS_ThrowOutOfMemory(ctx);
+	}
+	comp->resolver_ctx.compile_mode = 1;
+	comp->resolver_ctx.record_import = qnc_record_import;
+	comp->resolver_ctx.resolve_fallback = qnc_resolver_fallback;
+	comp->resolver_ctx.callback_opaque = comp;
 
 	/* Parse options */
 	if (argc > 0 && JS_IsObject(argv[0])) {
@@ -431,15 +500,47 @@ static JSValue compiler_constructor(JSContext *ctx, JSValueConst new_target,
 		v = JS_GetPropertyStr(ctx, argv[0], "prefix");
 		if (!JS_IsUndefined(v)) {
 			const char *s = JS_ToCString(ctx, v);
-			if (s) { free((void *)comp->c_ident_prefix); comp->c_ident_prefix = strdup(s); JS_FreeCString(ctx, s); }
+			if (!s) {
+				JS_FreeValue(ctx, v);
+				compiler_free(host_rt, comp);
+				return JS_EXCEPTION;
+			}
+			char *prefix = strdup(s);
+			JS_FreeCString(ctx, s);
+			if (!prefix) {
+				JS_FreeValue(ctx, v);
+				compiler_free(host_rt, comp);
+				return JS_ThrowOutOfMemory(ctx);
+			}
+			free(comp->c_ident_prefix);
+			comp->c_ident_prefix = prefix;
+		}
+		JS_FreeValue(ctx, v);
+
+		v = JS_GetPropertyStr(ctx, argv[0], "modulePath");
+		if (JS_IsString(v)) {
+			const char *s = JS_ToCString(ctx, v);
+			if (!s) {
+				JS_FreeValue(ctx, v);
+				compiler_free(host_rt, comp);
+				return JS_EXCEPTION;
+			}
+			comp->module_path = strdup(s);
+			JS_FreeCString(ctx, s);
+			if (!comp->module_path) {
+				JS_FreeValue(ctx, v);
+				compiler_free(host_rt, comp);
+				return JS_ThrowOutOfMemory(ctx);
+			}
 		}
 		JS_FreeValue(ctx, v);
 	}
+	comp->resolver_ctx.module_path = comp->module_path;
 
 	/* Create compile runtime */
 	comp->compile_rt = JS_NewRuntime();
 	if (!comp->compile_rt) {
-		js_free(ctx, comp);
+		compiler_free(host_rt, comp);
 		return JS_ThrowInternalError(ctx, "failed to create compile runtime");
 	}
 	js_std_init_handlers(comp->compile_rt);
@@ -447,9 +548,7 @@ static JSValue compiler_constructor(JSContext *ctx, JSValueConst new_target,
 
 	comp->compile_ctx = JS_NewContext(comp->compile_rt);
 	if (!comp->compile_ctx) {
-		js_std_free_handlers(comp->compile_rt);
-		JS_FreeRuntime(comp->compile_rt);
-		js_free(ctx, comp);
+		compiler_free(host_rt, comp);
 		return JS_ThrowInternalError(ctx, "failed to create compile context");
 	}
 
@@ -459,8 +558,16 @@ static JSValue compiler_constructor(JSContext *ctx, JSValueConst new_target,
 
 	/* Create JS object */
 	JSValue proto = JS_GetPropertyStr(ctx, new_target, "prototype");
+	if (JS_IsException(proto)) {
+		compiler_free(host_rt, comp);
+		return JS_EXCEPTION;
+	}
 	JSValue obj = JS_NewObjectProtoClass(ctx, proto, compiler_class_id);
 	JS_FreeValue(ctx, proto);
+	if (JS_IsException(obj)) {
+		compiler_free(host_rt, comp);
+		return obj;
+	}
 	JS_SetOpaque(obj, comp);
 	return obj;
 }
@@ -482,14 +589,27 @@ static JSValue compiler_add_cmodule(JSContext *ctx, JSValueConst this_val,
 	return JS_UNDEFINED;
 }
 
-/* setResolver(fn) — set the module normalizer callback */
-static JSValue compiler_set_resolver(JSContext *ctx, JSValueConst this_val,
-                                     int argc, JSValueConst *argv)
+/* setResolverFallback(fn) — set the policy fallback after normal resolution */
+static JSValue compiler_set_resolver_fallback(JSContext *ctx,
+										  JSValueConst this_val,
+										  int argc, JSValueConst *argv)
 {
 	QNCCompiler *comp = JS_GetOpaque2(ctx, this_val, compiler_class_id);
 	if (!comp) return JS_EXCEPTION;
-	JS_FreeValue(ctx, comp->resolve_fn);
-	comp->resolve_fn = JS_DupValue(ctx, argv[0]);
+	JS_FreeValue(ctx, comp->resolver_fallback_fn);
+	comp->resolver_fallback_fn = JS_DupValue(ctx, argv[0]);
+	return JS_UNDEFINED;
+}
+
+/* setImportHandler(fn) — receive compile-time import-map entries */
+static JSValue compiler_set_import_handler(JSContext *ctx,
+									   JSValueConst this_val,
+									   int argc, JSValueConst *argv)
+{
+	QNCCompiler *comp = JS_GetOpaque2(ctx, this_val, compiler_class_id);
+	if (!comp) return JS_EXCEPTION;
+	JS_FreeValue(ctx, comp->import_handler_fn);
+	comp->import_handler_fn = JS_DupValue(ctx, argv[0]);
 	return JS_UNDEFINED;
 }
 
@@ -502,6 +622,41 @@ static JSValue compiler_set_loader(JSContext *ctx, JSValueConst this_val,
 	JS_FreeValue(ctx, comp->load_fn);
 	comp->load_fn = JS_DupValue(ctx, argv[0]);
 	return JS_UNDEFINED;
+}
+
+/* resolve(base, specifier) — resolve through the same compile-time path used
+   for imports encountered by QuickJS. */
+static JSValue compiler_resolve(JSContext *ctx, JSValueConst this_val,
+								int argc, JSValueConst *argv)
+{
+	QNCCompiler *comp = JS_GetOpaque2(ctx, this_val, compiler_class_id);
+	if (!comp) return JS_EXCEPTION;
+	if (argc < 2)
+		return JS_ThrowTypeError(ctx, "resolve requires base and specifier");
+
+	const char *base = JS_ToCString(ctx, argv[0]);
+	const char *specifier = JS_ToCString(ctx, argv[1]);
+	if (!base || !specifier) {
+		if (base) JS_FreeCString(ctx, base);
+		if (specifier) JS_FreeCString(ctx, specifier);
+		return JS_EXCEPTION;
+	}
+
+	char *resolved = qnc_module_normalizer(comp->compile_ctx, base,
+										specifier, comp);
+	JS_FreeCString(ctx, base);
+	JS_FreeCString(ctx, specifier);
+	if (!resolved) {
+		if (JS_HasException(comp->compile_ctx)) {
+			JSValue exc = JS_GetException(comp->compile_ctx);
+			JS_FreeValue(comp->compile_ctx, exc);
+		}
+		return JS_ThrowInternalError(ctx, "module resolution failed");
+	}
+
+	JSValue result = JS_NewString(ctx, resolved);
+	js_free(comp->compile_ctx, resolved);
+	return result;
 }
 
 /* setBytecodeHandler(fn) — set the bytecode output callback */
@@ -564,10 +719,12 @@ static JSValue compiler_compile(JSContext *ctx, JSValueConst this_val,
 	                      name, eval_flags);
 	if (JS_IsException(obj)) {
 		js_std_dump_error(comp->compile_ctx);
+		JSValue error = JS_ThrowInternalError(ctx,
+			"compilation failed for '%s'", name);
 		JS_FreeCString(ctx, source);
 		JS_FreeCString(ctx, name);
 		if (cname_override) JS_FreeCString(ctx, cname_override);
-		return JS_ThrowInternalError(ctx, "compilation failed for '%s'", name);
+		return error;
 	}
 
 	/* Generate C name */
@@ -644,7 +801,8 @@ static void compiler_gc_mark(JSRuntime *rt, JSValueConst val,
 {
 	QNCCompiler *comp = JS_GetOpaque(val, compiler_class_id);
 	if (!comp) return;
-	JS_MarkValue(rt, comp->resolve_fn, mark_func);
+	JS_MarkValue(rt, comp->resolver_fallback_fn, mark_func);
+	JS_MarkValue(rt, comp->import_handler_fn, mark_func);
 	JS_MarkValue(rt, comp->load_fn, mark_func);
 	JS_MarkValue(rt, comp->bytecode_fn, mark_func);
 }
@@ -659,9 +817,11 @@ static JSClassDef compiler_class_def = {
 
 static const JSCFunctionListEntry compiler_proto_funcs[] = {
 	JS_CFUNC_DEF("addCModule", 1, compiler_add_cmodule),
-	JS_CFUNC_DEF("setResolver", 1, compiler_set_resolver),
+	JS_CFUNC_DEF("setResolverFallback", 1, compiler_set_resolver_fallback),
+	JS_CFUNC_DEF("setImportHandler", 1, compiler_set_import_handler),
 	JS_CFUNC_DEF("setLoader", 1, compiler_set_loader),
 	JS_CFUNC_DEF("setBytecodeHandler", 1, compiler_set_bytecode_handler),
+	JS_CFUNC_DEF("resolve", 2, compiler_resolve),
 	JS_CFUNC_DEF("compile", 2, compiler_compile),
 	JS_CFUNC_DEF("detectModule", 1, compiler_detect_module),
 	JS_CFUNC_DEF("close", 0, compiler_close),

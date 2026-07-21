@@ -30,14 +30,6 @@
 #include "quickjs/cutils.h"
 #include "quickjs/quickjs-libc.h"
 
-/* Forward declarations for hooks implemented in qn-vm.c. We can't include
-   qn-vm.h here because this header is also used by qnc's compile-time path
-   (which doesn't link the vm). The symbols resolve at link time for the
-   runtime; compile-time callers never reach the hook call site. */
-extern char *qn_apply_module_resolver_fallback(JSContext *ctx,
-                                                 const char *specifier,
-                                                 const char *base_name);
-
 /* ========================================================================
  * DEBUG OUTPUT
  * ======================================================================== */
@@ -124,8 +116,8 @@ static const char *get_search_paths(void) {
  *   NODE_PATH="./my_modules:./lib"
  *   resolve_node_path(ctx, "utils") might return "./my_modules/utils.js"
  */
-static char *resolve_node_path(JSContext *ctx, const char *name) {
-    const char *paths = get_search_paths();
+static char *resolve_module_path(JSContext *ctx, const char *name,
+								 const char *paths) {
     if (!paths) return NULL;
 
     char *copy = js_strdup(ctx, paths);
@@ -159,6 +151,10 @@ static char *resolve_node_path(JSContext *ctx, const char *name) {
 
     js_free(ctx, copy);
     return result;
+}
+
+static char *resolve_node_path(JSContext *ctx, const char *name) {
+	return resolve_module_path(ctx, name, get_search_paths());
 }
 
 /**
@@ -231,10 +227,10 @@ static char *translate_colons_to_slashes(JSContext *ctx, const char *name) {
  * Check if Node.js strict resolution mode is enabled.
  *
  * Node mode (QN_MODULE_RESOLUTION=node):
- *   - Matches Node.js ESM behavior exactly
+ *   - More closely matches Node.js ESM behavior
  *   - Explicit extensions required (no .js fallback)
  *   - No automatic index.js resolution
- *   - NODE_PATH and colon-to-slash still work
+ *   - NODE_PATH disabled; colon-to-slash still applies
  *
  * Bundler mode (default):
  *   - "./foo" resolves to "./foo.js" if it exists
@@ -283,21 +279,35 @@ typedef struct {
 /**
  * Callback for recording import map entries at compile time.
  */
-typedef void (*QNImportRecordFn)(const char *base, const char *specifier, const char *resolved);
+typedef void (*QNImportRecordFn)(const char *base, const char *specifier,
+								 const char *resolved, void *opaque);
+
+/**
+ * Callback for policy-specific resolution after the filesystem resolver has
+ * exhausted its normal bare-import search. The returned string must be
+ * allocated with js_malloc() in ctx.
+ */
+typedef char *(*QNModuleResolverFallbackFn)(JSContext *ctx,
+											const char *specifier,
+											const char *base_name,
+											void *opaque);
 
 /**
  * Context for module resolution, passed via opaque parameter.
  *
- * Interpreter (qjsx):     embedded_modules=NULL, compile_mode=0
- * Compiler (qnc):       compile_mode=1, record_import set
- * Runtime standalone:      embedded_modules set, import_map set
+ * Interpreter (qn):     compile_mode=0, resolve_fallback set
+ * Compiler (qnc):       compile_mode=1, callbacks and module_path set
+ * Runtime standalone:   embedded_modules, import_map, and fallback set
  */
 typedef struct {
     const char **embedded_modules;
     const QNImportMapEntry *import_map;
     int import_map_count;
     int compile_mode;           /* 1 = compiler, prefix all with embedded:// */
-    QNImportRecordFn record_import;  /* compile-time: record (base, spec, resolved) */
+	const char *module_path;      /* context-owned support modules, independent of NODE_PATH */
+	QNImportRecordFn record_import;  /* compile-time: record (base, spec, resolved) */
+	QNModuleResolverFallbackFn resolve_fallback; /* policy fallback, e.g. tsconfig paths */
+	void *callback_opaque;
 } QNModuleResolverContext;
 
 /**
@@ -719,7 +729,8 @@ static char *resolve_wildcard_export(JSContext *ctx, JSValue exports_val,
  */
 static char *resolve_package_json(JSContext *ctx, const char *pkg_dir, const char *subpath) {
     char pkg_json_path[PATH_MAX];
-    snprintf(pkg_json_path, sizeof(pkg_json_path), "%s/package.json", pkg_dir);
+    int path_len = snprintf(pkg_json_path, sizeof(pkg_json_path), "%s/package.json", pkg_dir);
+    if (path_len < 0 || (size_t)path_len >= sizeof(pkg_json_path)) return NULL;
 
     size_t buf_len;
     uint8_t *buf = js_load_file(ctx, &buf_len, pkg_json_path);
@@ -740,7 +751,8 @@ static char *resolve_package_json(JSContext *ctx, const char *pkg_dir, const cha
     if (!JS_IsUndefined(exports_val) && !JS_IsException(exports_val)) {
         char subpath_key[256];
         if (strcmp(subpath, ".") == 0) {
-            strcpy(subpath_key, ".");
+            subpath_key[0] = '.';
+            subpath_key[1] = '\0';
         } else if (strlen(subpath) + 3 > sizeof(subpath_key)) {
             /* Subpath too long for our fixed buffer: surface rather than
              * silently truncate, which could cause a spurious exports match. */
@@ -793,7 +805,7 @@ static char *resolve_package_json(JSContext *ctx, const char *pkg_dir, const cha
  * Resolve a bare import by walking up the directory tree from the importing
  * file's location, looking for node_modules directories containing the package.
  *
- * @param base_name - Absolute path of the importing file
+ * @param base_name - Absolute or CWD-relative name of the importing file
  * @param name - Bare import specifier (e.g., "hono", "hono/cookie")
  */
 static char *resolve_node_modules(JSContext *ctx, const char *base_name, const char *name) {
@@ -816,13 +828,15 @@ static char *resolve_node_modules(JSContext *ctx, const char *base_name, const c
     } else if (slash) {
         base_dir[1] = '\0';
     } else {
-        strcpy(base_dir, ".");
+        base_dir[0] = '.';
+        base_dir[1] = '\0';
     }
 
     /* Walk up the directory tree */
     for (;;) {
         char pkg_dir[PATH_MAX];
-        snprintf(pkg_dir, sizeof(pkg_dir), "%s/node_modules/%s", base_dir, pkg_name);
+        int path_len = snprintf(pkg_dir, sizeof(pkg_dir), "%s/node_modules/%s", base_dir, pkg_name);
+        if (path_len < 0 || (size_t)path_len >= sizeof(pkg_dir)) return NULL;
 
         struct stat st;
         if (stat(pkg_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
@@ -838,8 +852,9 @@ static char *resolve_node_modules(JSContext *ctx, const char *base_name, const c
                 result = resolve_with_index(ctx, pkg_dir);
             } else {
                 char full_path[PATH_MAX];
-                snprintf(full_path, sizeof(full_path), "%s/%s", pkg_dir, subpath);
-                result = resolve_with_index(ctx, full_path);
+                path_len = snprintf(full_path, sizeof(full_path), "%s/%s", pkg_dir, subpath);
+                if (path_len >= 0 && (size_t)path_len < sizeof(full_path))
+                    result = resolve_with_index(ctx, full_path);
             }
             if (result) return result;
         }
@@ -847,8 +862,10 @@ static char *resolve_node_modules(JSContext *ctx, const char *base_name, const c
         /* Move up one directory */
         if (strcmp(base_dir, "/") == 0 || strcmp(base_dir, ".") == 0) break;
         slash = strrchr(base_dir, '/');
-        if (!slash) break;
-        if (slash == base_dir) {
+        if (!slash) {
+            base_dir[0] = '.'; /* relative top level: try CWD once */
+            base_dir[1] = '\0';
+        } else if (slash == base_dir) {
             base_dir[1] = '\0'; /* try root once */
         } else {
             *slash = '\0';
@@ -862,11 +879,13 @@ static char *resolve_node_modules(JSContext *ctx, const char *base_name, const c
  * Helper: prepend embedded:// prefix to a name.
  */
 static char *make_embedded_name(JSContext *ctx, const char *name) {
-    size_t len = EMBEDDED_PREFIX_LEN + strlen(name) + 1;
+    size_t name_len = strlen(name);
+    if (name_len > SIZE_MAX - EMBEDDED_PREFIX_LEN - 1) return NULL;
+    size_t len = EMBEDDED_PREFIX_LEN + name_len + 1;
     char *result = js_malloc(ctx, len);
     if (result) {
         memcpy(result, EMBEDDED_PREFIX, EMBEDDED_PREFIX_LEN);
-        strcpy(result + EMBEDDED_PREFIX_LEN, name);
+        memcpy(result + EMBEDDED_PREFIX_LEN, name, name_len + 1);
     }
     return result;
 }
@@ -990,7 +1009,24 @@ static char *compile_mode_normalize(JSContext *ctx, const char *base_name,
                 found_on_disk = 1;
             }
         }
-        if (!result && is_filesystem_path(effective_base)) {
+		/* Compiler-owned support modules remain available in strict mode. This
+		   path is separate from user NODE_PATH so strict user resolution is
+		   unchanged. */
+		if (!result && resolver_ctx->module_path) {
+			char *full_path = resolve_module_path(
+				ctx, resolved, resolver_ctx->module_path);
+			if (full_path) {
+				char *real = resolve_compile_realpath(ctx, full_path);
+				result = make_embedded_name(ctx, real ? real : full_path);
+				if (real) js_free(ctx, real);
+				js_free(ctx, full_path);
+				found_on_disk = 1;
+			}
+		}
+        /* Entry names below CWD are intentionally stored without a leading
+           "./" (for example, "src/main.js"). They are still filesystem
+           module names and must participate in node_modules walking. */
+        if (!result) {
             char *nm_resolved = resolve_node_modules(ctx, effective_base, resolved);
             if (nm_resolved) {
                 char *real = resolve_compile_realpath(ctx, nm_resolved);
@@ -1020,6 +1056,19 @@ static char *compile_mode_normalize(JSContext *ctx, const char *base_name,
                 found_on_disk = 1;
             }
         }
+		/* Policy-specific fallbacks are intentionally last so aliases cannot
+		   shadow NODE_PATH entries, packages, or direct filesystem modules. */
+		if (!result && resolver_ctx->resolve_fallback) {
+			char *fallback = resolver_ctx->resolve_fallback(
+				ctx, name, effective_base, resolver_ctx->callback_opaque);
+			if (fallback) {
+				char *real = resolve_compile_realpath(ctx, fallback);
+				result = make_embedded_name(ctx, real ? real : fallback);
+				if (real) js_free(ctx, real);
+				js_free(ctx, fallback);
+				found_on_disk = 1;
+			}
+		}
         if (!result) {
             /* Not found on disk — likely a C module (std, os, etc.).
                Don't prefix with embedded:// so it keeps its original name. */
@@ -1044,13 +1093,12 @@ static char *compile_mode_normalize(JSContext *ctx, const char *base_name,
         found_on_disk = 1;
     }
 
-    /* Record import map for resolutions the runtime can't reproduce:
-       bare imports (NODE_PATH, extension probing) and absolute path imports
-       (CWD-relativization). Relative imports (./  ../) don't need recording
-       since runtime resolves them via path arithmetic on the embedded base. */
-    if (found_on_disk && (!is_filesystem_path(name) || name[0] == '/') &&
-        resolver_ctx->record_import && result) {
-        resolver_ctx->record_import(base_name, name, result);
+    /* Record every filesystem resolution. Most relative imports can be
+       reproduced with path arithmetic, but extension probing, symlinks, and
+       CWD-relativization can all change the canonical embedded name. */
+    if (found_on_disk && resolver_ctx->record_import && result) {
+		resolver_ctx->record_import(base_name, name, result,
+			resolver_ctx->callback_opaque);
     }
 
     if (real_base) js_free(ctx, real_base);
@@ -1060,10 +1108,10 @@ static char *compile_mode_normalize(JSContext *ctx, const char *base_name,
 }
 
 /**
- * QJSX module normalizer - produces canonical module names.
+ * Qn module normalizer - produces canonical module names.
  *
  * Three modes of operation:
- *   1. Interpreter (qjsx): filesystem-only resolution
+ *   1. Interpreter (qn): filesystem-only resolution
  *   2. Compiler (qnc): filesystem resolution + embedded:// prefix
  *   3. Runtime standalone: import map + embedded list + disk fallback
  *
@@ -1241,8 +1289,9 @@ static char *qn_module_normalizer(JSContext *ctx, const char *base_name,
         /* Final fallback: consult the JS-side module resolver hook (tsconfig
            paths / jsconfig paths). Passes the ORIGINAL specifier, since the
            resolver matches against the user-written name. */
-        {
-            char *fallback = qn_apply_module_resolver_fallback(ctx, name, base_name);
+		if (resolver_ctx && resolver_ctx->resolve_fallback) {
+			char *fallback = resolver_ctx->resolve_fallback(
+				ctx, name, base_name, resolver_ctx->callback_opaque);
             if (fallback) {
                 char *real = resolve_realpath(ctx, fallback);
                 if (real) { js_free(ctx, fallback); fallback = real; }
@@ -1251,7 +1300,7 @@ static char *qn_module_normalizer(JSContext *ctx, const char *base_name,
                 MODULE_DEBUG("result (bare, fallback hook): '%s'", fallback);
                 return fallback;
             }
-        }
+		}
 
         if (real_base) js_free(ctx, real_base);
         MODULE_DEBUG("result (bare): '%s'", resolved);
