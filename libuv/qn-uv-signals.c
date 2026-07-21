@@ -15,9 +15,11 @@
 
 /* ---- SignalHandler opaque class ---- */
 
+/* Native storage can survive until JSContext teardown, so its allocator is owned by the longer-lived JSRuntime. */
 typedef struct QNSignalHandler {
 	struct QNSignalHandler *next;
 	JSContext *ctx;
+	JSRuntime *rt;
 	int closed;
 	int finalized;
 	uv_signal_t handle;
@@ -27,8 +29,8 @@ typedef struct QNSignalHandler {
 
 static JSClassID qn_signal_handler_class_id;
 
-/* Linked list of all live signal handlers, for shutdown cleanup. */
-static QNSignalHandler *signal_head = NULL;
+/* Each qn event-loop thread owns and shuts down only its own signal handles. */
+static _Thread_local QNSignalHandler *signal_head = NULL;
 
 static void signal_link(QNSignalHandler *sh) {
 	sh->next = signal_head;
@@ -43,15 +45,18 @@ static void signal_unlink(QNSignalHandler *sh) {
 	}
 }
 
+static void signal_maybe_free(QNSignalHandler *sh) {
+	if (sh->closed && sh->finalized) {
+		signal_unlink(sh);
+		js_free_rt(sh->rt, sh);
+	}
+}
+
 static void uv__signal_close_cb(uv_handle_t *handle) {
 	QNSignalHandler *sh = handle->data;
-	if (sh) {
-		sh->closed = 1;
-		if (sh->finalized) {
-			signal_unlink(sh);
-			js_free(sh->ctx, sh);
-		}
-	}
+	if (!sh) return;
+	sh->closed = 1;
+	signal_maybe_free(sh);
 }
 
 static void maybe_close(QNSignalHandler *sh) {
@@ -63,12 +68,12 @@ static void qn_signal_handler_finalizer(JSRuntime *rt, JSValue val) {
 	QNSignalHandler *sh = JS_GetOpaque(val, qn_signal_handler_class_id);
 	if (sh) {
 		JS_FreeValueRT(rt, sh->func);
+		sh->func = JS_UNDEFINED;
 		sh->finalized = 1;
-		if (sh->closed) {
-			signal_unlink(sh);
-			js_free(sh->ctx, sh);
-		} else {
+		if (!sh->closed) {
 			maybe_close(sh);
+		} else {
+			signal_maybe_free(sh);
 		}
 	}
 }
@@ -121,14 +126,15 @@ static JSValue js_uv_signal(JSContext *ctx, JSValueConst this_val,
 	}
 
 	sh->ctx = ctx;
+	sh->rt = JS_GetRuntime(ctx);
 	sh->sig_num = sig_num;
 	sh->handle.data = sh;
+	sh->func = JS_UNDEFINED;
+	JS_SetOpaque(obj, sh);
 
 	r = uv_signal_start(&sh->handle, uv__signal_cb, sig_num);
 	if (r != 0) {
 		JS_FreeValue(ctx, obj);
-		/* Handle was uv_signal_init'd — must close via uv_close */
-		uv_close((uv_handle_t *)&sh->handle, uv__signal_close_cb);
 		return qn_throw_errno(ctx, r);
 	}
 
@@ -137,7 +143,6 @@ static JSValue js_uv_signal(JSContext *ctx, JSValueConst this_val,
 
 	sh->func = JS_DupValue(ctx, func);
 
-	JS_SetOpaque(obj, sh);
 	signal_link(sh);
 	return obj;
 }
