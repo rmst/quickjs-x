@@ -31,7 +31,7 @@ Qn is built from ~24K LOC of own code plus four vendored C dependencies and one 
 - `introspect/` (30) — closure introspection (bulk is in QuickJS patch)
 
 **Native module packages** — C modules auto-compiled and embedded by qnc at build time via `package.json` `"qnc"` field:
-- `node/qn/crypto/qn-crypto.c` — crypto primitives + TLS bindings, compiled with BearSSL sources
+- `node/qn/crypto/` — focused native units for PEM credentials, TLS, hashes/HMAC, ciphers/AEAD, and ECC, composed by `qn-crypto.c` and compiled with BearSSL sources
 - `node/node/sqlite/qjs-sqlite.c` — SQLite bindings, compiled with amalgamation
 
 **Module resolution** ([`module_resolution/`](module_resolution/Readme.md)) — ~1.2K LOC C. NODE_PATH, node_modules walking, package.json resolution, `.ts`/`.js` extension probing. For standalone binaries: `embedded://` namespace separation, compile-time import map, `file://` protocol for forced disk loading.

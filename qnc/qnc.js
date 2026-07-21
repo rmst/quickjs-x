@@ -620,6 +620,8 @@ function parseNativePackage(pkgDir, targetNameMatch) {
 		initName: "js_init_module_" + qnc.target_name,
 		pkgJsonPath: pkgPath,
 		sources: [],
+		explicitSourceCount: 0,
+		headers: [],
 		objects: [],
 		includeDirs: [],
 		defines: [],
@@ -629,8 +631,12 @@ function parseNativePackage(pkgDir, targetNameMatch) {
 	}
 
 	// Parse arrays (resolve relative to pkgDir)
-	if (Array.isArray(qnc.sources))
+	if (Array.isArray(qnc.sources)) {
 		nm.sources = qnc.sources.map(s => pkgDir + "/" + s)
+		nm.explicitSourceCount = nm.sources.length
+	}
+	if (Array.isArray(qnc.headers))
+		nm.headers = qnc.headers.map(s => pkgDir + "/" + s)
 	if (Array.isArray(qnc.objects))
 		nm.objects = qnc.objects.map(s => pkgDir + "/" + s)
 	if (Array.isArray(qnc.include_dirs))
@@ -1506,9 +1512,15 @@ function compileNativeModule(nm, incDir, cc, verbose, cacheDir) {
 			const srcBase = basename(src).replace(/\.c$/, ".o")
 			objPath = targetDir + "/" + srcBase
 
-			// Check cache
-			if (getMtime(objPath) >= getMtime(src) &&
-				(!nm.pkgJsonPath || getMtime(objPath) >= getMtime(nm.pkgJsonPath))) {
+			// Declared headers are cache inputs for explicit package sources. Missing inputs invalidate the cache and let the compiler report the real error.
+			const sourceHeaders = si < nm.explicitSourceCount ? nm.headers : []
+			const cacheInputs = [src, nm.pkgJsonPath, ...sourceHeaders].filter(Boolean)
+			const objMtime = getMtime(objPath)
+			const cacheIsCurrent = objMtime > 0 && cacheInputs.every(input => {
+				const inputMtime = getMtime(input)
+				return inputMtime > 0 && objMtime >= inputMtime
+			})
+			if (cacheIsCurrent) {
 				if (verbose) print(`qnc: cached ${objPath}`)
 				nm.objFiles.push(objPath)
 				continue

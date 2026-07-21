@@ -2,7 +2,20 @@
 	"name": "qn:crypto",
 	"qnc": {
 		"target_name": "qn_crypto",
-		"sources": ["qn-crypto.c"],
+		"sources": [
+			"qn-crypto.c",
+			"qn-crypto-util.c",
+			"qn-crypto-pem.c",
+			"qn-crypto-tls.c",
+			"qn-crypto-digest.c",
+			"qn-crypto-cipher.c",
+			"qn-crypto-ecc.c"
+		],
+		"headers": [
+			"qn-crypto.h",
+			"qn-crypto-util.h",
+			"qn-crypto-pem.h"
+		],
 		"source_dirs": ["../../../vendor/bearssl/src"],
 		"include_dirs": [".", "../../../vendor/bearssl/inc", "../../../vendor/bearssl/src"],
 		"defines": []
